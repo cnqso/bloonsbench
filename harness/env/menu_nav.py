@@ -46,9 +46,26 @@ class TowerDef:
     icon: NavCoord   # click target on the sidebar
 
 
+# Grid layout: 2 columns (x≈858, x≈918), rows spaced ~54px starting at y≈146
+# Positions calibrated via debug_nav.py; dart/tack/sniper confirmed, rest extrapolated
+_LX, _RX = 858, 918  # left/right column x
+_ROW_Y = [146, 200, 254, 308, 362, 416]  # row y positions
+
 TOWERS = {
-    "dart_monkey":  TowerDef("dart_monkey",  1, NavCoord("dart_monkey_icon", 859, 144)),
-    "tack_shooter": TowerDef("tack_shooter", 1, NavCoord("tack_shooter_icon", 918, 148)),
+    # Page 1
+    "dart_monkey":       TowerDef("dart_monkey",       1, NavCoord("dart_monkey",       _LX, _ROW_Y[0])),
+    "tack_shooter":      TowerDef("tack_shooter",      1, NavCoord("tack_shooter",      _RX, _ROW_Y[0])),
+    "sniper_monkey":     TowerDef("sniper_monkey",     1, NavCoord("sniper_monkey",     _LX, _ROW_Y[1])),
+    "boomerang_thrower": TowerDef("boomerang_thrower", 1, NavCoord("boomerang_thrower", _RX, _ROW_Y[1])),
+    "ninja_monkey":      TowerDef("ninja_monkey",      1, NavCoord("ninja_monkey",      _LX, _ROW_Y[2])),
+    "bomb_tower":        TowerDef("bomb_tower",        1, NavCoord("bomb_tower",        _RX, _ROW_Y[2])),
+    "ice_tower":         TowerDef("ice_tower",         1, NavCoord("ice_tower",         _LX, _ROW_Y[3])),
+    "glue_gunner":       TowerDef("glue_gunner",       1, NavCoord("glue_gunner",       _RX, _ROW_Y[3])),
+    "monkey_buccaneer":  TowerDef("monkey_buccaneer",  1, NavCoord("monkey_buccaneer",  _LX, _ROW_Y[4])),
+    "monkey_ace":        TowerDef("monkey_ace",        1, NavCoord("monkey_ace",        _RX, _ROW_Y[4])),
+    "super_monkey":      TowerDef("super_monkey",      1, NavCoord("super_monkey",      _LX, _ROW_Y[5])),
+    "monkey_apprentice": TowerDef("monkey_apprentice", 1, NavCoord("monkey_apprentice", _RX, _ROW_Y[5])),
+    # Page 2 (to be calibrated)
 }
 
 
