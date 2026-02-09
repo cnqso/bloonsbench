@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# macOS
+.DS_Store
+
+# Runtime artifacts
+logs/
+vendor/
+profiles/
+
+# Game files (not distributed)
+game/*.swf
+
+# Saves (user-specific, export your own)
+saves/*.json
+
+# Editor
+.claude/

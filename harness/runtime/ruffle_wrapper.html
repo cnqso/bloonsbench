@@ -1,0 +1,57 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>bloonsbench ruffle wrapper</title>
+    <style>
+      html, body { margin: 0; padding: 0; background: #111; color: #eee; }
+      #container { width: 960px; height: 720px; margin: 12px auto; border: 1px solid #333; }
+      .note { width: 960px; margin: 6px auto; font: 12px/1.4 -apple-system, system-ui, sans-serif; color: #aaa; }
+    </style>
+    <script src="./ruffle.js"></script>
+  </head>
+  <body>
+    <div class="note">bloonsbench harness wrapper (Ruffle Web). No LLM yet. Use Playwright to drive this page.</div>
+    <div id="container"></div>
+
+    <script>
+      // Basic embed. The harness passes SWF as ?swf=...
+      const params = new URLSearchParams(window.location.search);
+      const swfUrl = params.get('swf');
+      if (!swfUrl) {
+        document.body.insertAdjacentHTML('beforeend', '<div class="note">Missing ?swf= URL param</div>');
+        throw new Error('Missing swf param');
+      }
+
+      window.RufflePlayer = window.RufflePlayer || {};
+      const ruffle = window.RufflePlayer.newest();
+      const player = ruffle.createPlayer();
+
+      // Deterministic-ish sizing
+      player.style.width = '100%';
+      player.style.height = '100%';
+
+      document.getElementById('container').appendChild(player);
+
+      // Expose the player for automation hooks
+      const defer = params.get('defer') === '1';
+      window.__BLOONSBENCH__ = {
+        player,
+        deferred: defer,
+        loaded: false,
+        loadGame: function() {
+          if (!this.loaded) {
+            this.loaded = true;
+            player.ruffle().load({ url: swfUrl });
+          }
+        }
+      };
+
+      // Load immediately unless deferred
+      if (!defer) {
+        window.__BLOONSBENCH__.loadGame();
+      }
+    </script>
+  </body>
+</html>
