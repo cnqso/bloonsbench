@@ -1,7 +1,6 @@
-"""Menu navigation for BTD5 via coordinate-based click sequences.
+"""Menu navigation and tower placement for BTD5.
 
-All coordinates are relative to the fixed 960x720 content area.
-Coordinates are placeholders -- calibrate via screenshot inspection.
+All coordinates are content-relative (960x720 area), calibrated via debug_nav.py.
 """
 
 from __future__ import annotations
@@ -20,28 +19,47 @@ class NavCoord:
     y: float
 
 
-# Click targets (placeholder coordinates)
-PLAY_BUTTON = NavCoord("play", 480, 400)
+# ── Menu navigation ──────────────────────────────────────────────
+PLAY_BUTTON = NavCoord("play", 828, 533)
 
 MAPS = {
-    "monkey_lane": NavCoord("monkey_lane", 200, 250),
-    "the_rink":    NavCoord("the_rink",    200, 310),
-    "park_path":   NavCoord("park_path",   200, 370),
+    "monkey_lane": NavCoord("monkey_lane", 331, 276),
 }
 
 DIFFICULTIES = {
-    "easy":   NavCoord("easy",   300, 450),
-    "medium": NavCoord("medium", 480, 450),
-    "hard":   NavCoord("hard",   660, 450),
+    "easy":   NavCoord("easy", 210, 268),
 }
 
-DIALOG_DISMISS = NavCoord("dialog_dismiss", 480, 500)
-START_GAME = NavCoord("start_game", 480, 550)
+DIALOG_DISMISS = NavCoord("dialog_dismiss", 491, 526)
+START_GAME = NavCoord("start_game", 458, 261)
+CLOSE_PREMIUM = NavCoord("close_premium", 728, 91)
+
+# ── Tower selection ──────────────────────────────────────────────
+TOWER_PAGE_1 = NavCoord("tower_page_1", 884, 100)
+TOWER_PAGE_2 = NavCoord("tower_page_2", 887, 466)
+
+
+@dataclass(frozen=True)
+class TowerDef:
+    name: str
+    page: int        # 1 or 2
+    icon: NavCoord   # click target on the sidebar
+
+
+TOWERS = {
+    "dart_monkey":  TowerDef("dart_monkey",  1, NavCoord("dart_monkey_icon", 859, 144)),
+    "tack_shooter": TowerDef("tack_shooter", 1, NavCoord("tack_shooter_icon", 918, 148)),
+}
 
 
 def _click(page: Page, coord: NavCoord, container_box: dict) -> None:
     abs_x = container_box["x"] + coord.x
     abs_y = container_box["y"] + coord.y
+    # Show red dot at click location
+    try:
+        page.evaluate(f"window.__BLOONSBENCH__?.showDot?.({abs_x}, {abs_y})")
+    except Exception:
+        pass
     page.mouse.click(abs_x, abs_y)
 
 
@@ -57,7 +75,7 @@ def navigate_to_round(
     map_name: str = "monkey_lane",
     difficulty: str = "easy",
     screenshot_dir: Optional[Path] = None,
-    step_delay_s: float = 1.5,
+    step_delay_s: float = 2.0,
 ) -> list[Path]:
     """Navigate from main menu to round 1 start.
 
@@ -88,5 +106,37 @@ def navigate_to_round(
     _step(f"map_{map_name}", MAPS[map_name])
     _step(f"diff_{difficulty}", DIFFICULTIES[difficulty])
     _step("start", START_GAME)
+    _step("close_premium", CLOSE_PREMIUM)
 
     return screenshots
+
+
+def place_tower(
+    page: Page,
+    tower_name: str,
+    x: float,
+    y: float,
+    click_delay_s: float = 0.5,
+) -> None:
+    """Select a tower from the sidebar and place it at (x, y) on the map.
+
+    Coordinates are content-relative (960x720).
+    """
+    if tower_name not in TOWERS:
+        raise ValueError(f"Unknown tower: {tower_name!r}. Known: {list(TOWERS)}")
+
+    tower = TOWERS[tower_name]
+    box = _get_container_box(page)
+
+    # Click the correct page tab
+    page_btn = TOWER_PAGE_1 if tower.page == 1 else TOWER_PAGE_2
+    _click(page, page_btn, box)
+    page.wait_for_timeout(int(click_delay_s * 1000))
+
+    # Click the tower icon
+    _click(page, tower.icon, box)
+    page.wait_for_timeout(int(click_delay_s * 1000))
+
+    # Click the map to place it
+    _click(page, NavCoord(f"place_{tower_name}", x, y), box)
+    page.wait_for_timeout(int(click_delay_s * 1000))

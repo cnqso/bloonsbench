@@ -14,7 +14,7 @@ from playwright.sync_api import BrowserContext, Page, sync_playwright
 from harness.env.config import HarnessConfig
 from harness.env.network import block_nk_domains
 from harness.env.save_data import import_saves_from_file
-from harness.env.menu_nav import navigate_to_round
+from harness.env.menu_nav import navigate_to_round, place_tower
 from harness.runtime.local_http import LocalServer, serve_directory
 from harness.runtime.ruffle_web_vendor import ensure_ruffle_web
 from harness.trace.logger import TraceLogger
@@ -66,7 +66,9 @@ class BloonsWebEnv:
         wrapper_text = wrapper_text.replace("960px", f"{self.cfg.content_width}px").replace("720px", f"{self.cfg.content_height}px")
         (www / "index.html").write_text(wrapper_text, encoding="utf-8")
 
-        (www / "game.swf").symlink_to(self.swf_path)
+        game_link = www / "game.swf"
+        if not game_link.exists():
+            game_link.symlink_to(self.swf_path)
 
         self.server = serve_directory(www, port=self.cfg.server_port)
         base = self.server.base_url
@@ -143,6 +145,12 @@ class BloonsWebEnv:
         abs_y = box["y"] + y
         self.logger.log("click", x=x, y=y, abs_x=abs_x, abs_y=abs_y)
         self.page.mouse.click(abs_x, abs_y)
+
+    def place_tower(self, tower_name: str, x: float, y: float) -> None:
+        """Select and place a tower at content-relative (x, y)."""
+        assert self.page and self.logger
+        self.logger.log("place_tower", tower=tower_name, x=x, y=y)
+        place_tower(self.page, tower_name, x, y)
 
     def press(self, key: str) -> None:
         assert self.page and self.logger

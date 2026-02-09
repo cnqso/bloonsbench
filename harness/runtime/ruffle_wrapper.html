@@ -25,6 +25,10 @@
       }
 
       window.RufflePlayer = window.RufflePlayer || {};
+      window.RufflePlayer.config = {
+        renderer: "canvas",
+        autoplay: "on",
+      };
       const ruffle = window.RufflePlayer.newest();
       const player = ruffle.createPlayer();
 
@@ -52,6 +56,73 @@
       if (!defer) {
         window.__BLOONSBENCH__.loadGame();
       }
+
+      // --- Debug overlay: coordinate logger + red click dots ---
+      (function() {
+        const container = document.getElementById('container');
+        const box = container.getBoundingClientRect();
+
+        // Coordinate display (top-right)
+        const overlay = document.createElement('div');
+        overlay.id = 'coord-overlay';
+        overlay.style.cssText = `
+          position: fixed; top: 10px; right: 10px; z-index: 99999;
+          background: rgba(0,0,0,0.85); color: #0f0; font: bold 13px monospace;
+          padding: 8px 12px; border-radius: 6px; pointer-events: none;
+          min-width: 240px;
+        `;
+        overlay.textContent = 'Click to log coords';
+        document.body.appendChild(overlay);
+
+        // Click log (bottom-right)
+        const log = document.createElement('div');
+        log.id = 'coord-log';
+        log.style.cssText = `
+          position: fixed; bottom: 10px; right: 10px; z-index: 99999;
+          background: rgba(0,0,0,0.85); color: #fff; font: 12px monospace;
+          padding: 8px 12px; border-radius: 6px; pointer-events: none;
+          max-height: 180px; overflow-y: auto; min-width: 280px;
+        `;
+        document.body.appendChild(log);
+
+        let clickNum = 0;
+
+        // Red dot at click location
+        function showDot(x, y) {
+          const dot = document.createElement('div');
+          dot.style.cssText = `
+            position: fixed; left: ${x - 6}px; top: ${y - 6}px;
+            width: 12px; height: 12px; border-radius: 50%;
+            background: red; border: 2px solid white;
+            z-index: 99998; pointer-events: none;
+            opacity: 0.9;
+          `;
+          document.body.appendChild(dot);
+          setTimeout(() => { dot.style.opacity = '0.3'; }, 3000);
+        }
+
+        document.addEventListener('click', function(e) {
+          clickNum++;
+          const cbox = container.getBoundingClientRect();
+          const cx = Math.round(e.clientX - cbox.x);
+          const cy = Math.round(e.clientY - cbox.y);
+
+          overlay.innerHTML = `Page: (${e.clientX}, ${e.clientY})<br><b>Content: (${cx}, ${cy})</b>`;
+
+          const entry = document.createElement('div');
+          entry.style.cssText = 'border-bottom: 1px solid #333; padding: 2px 0;';
+          entry.textContent = `#${clickNum}: content=(${cx}, ${cy})`;
+          log.appendChild(entry);
+          log.scrollTop = log.scrollHeight;
+
+          showDot(e.clientX, e.clientY);
+
+          window.__LAST_CLICK__ = {num: clickNum, contentX: cx, contentY: cy};
+        }, true);
+
+        // Also expose showDot for programmatic clicks from Playwright
+        window.__BLOONSBENCH__.showDot = showDot;
+      })();
     </script>
   </body>
 </html>

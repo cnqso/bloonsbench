@@ -21,14 +21,14 @@ class HarnessConfig:
     autosave_profile: bool = True
 
     round_sample_times_s: tuple[float, ...] = (0.5, 2.0, 5.0)
-    startup_wait_s: float = 1.0
+    startup_wait_s: float = 13.0
 
     # Fixed port for local HTTP server. Pinning ensures localStorage
     # (origin-scoped to 127.0.0.1:PORT) persists across sessions.
     server_port: Optional[int] = 8890
 
     block_network: bool = True
-    save_data_path: Optional[Path] = None
+    save_data_path: Optional[Path] = Path(__file__).resolve().parents[2] / "saves" / "unlocks_maxed.json"
 
     auto_navigate_to_round: bool = False
     nav_map_name: str = "monkey_lane"
