@@ -57,10 +57,9 @@
         window.__BLOONSBENCH__.loadGame();
       }
 
-      // --- Debug overlay: coordinate logger + red click dots ---
+      // --- Debug overlay: coordinate logger + single red click dot ---
       (function() {
         const container = document.getElementById('container');
-        const box = container.getBoundingClientRect();
 
         // Coordinate display (top-right)
         const overlay = document.createElement('div');
@@ -74,21 +73,12 @@
         overlay.textContent = 'Click to log coords';
         document.body.appendChild(overlay);
 
-        // Click log (bottom-right)
-        const log = document.createElement('div');
-        log.id = 'coord-log';
-        log.style.cssText = `
-          position: fixed; bottom: 10px; right: 10px; z-index: 99999;
-          background: rgba(0,0,0,0.85); color: #fff; font: 12px monospace;
-          padding: 8px 12px; border-radius: 6px; pointer-events: none;
-          max-height: 180px; overflow-y: auto; min-width: 280px;
-        `;
-        document.body.appendChild(log);
-
         let clickNum = 0;
+        let currentDot = null;
 
-        // Red dot at click location
+        // Red dot at click location — only the most recent one
         function showDot(x, y) {
+          if (currentDot) currentDot.remove();
           const dot = document.createElement('div');
           dot.style.cssText = `
             position: fixed; left: ${x - 6}px; top: ${y - 6}px;
@@ -98,7 +88,7 @@
             opacity: 0.9;
           `;
           document.body.appendChild(dot);
-          setTimeout(() => { dot.style.opacity = '0.3'; }, 3000);
+          currentDot = dot;
         }
 
         document.addEventListener('click', function(e) {
@@ -108,12 +98,7 @@
           const cy = Math.round(e.clientY - cbox.y);
 
           overlay.innerHTML = `Page: (${e.clientX}, ${e.clientY})<br><b>Content: (${cx}, ${cy})</b>`;
-
-          const entry = document.createElement('div');
-          entry.style.cssText = 'border-bottom: 1px solid #333; padding: 2px 0;';
-          entry.textContent = `#${clickNum}: content=(${cx}, ${cy})`;
-          log.appendChild(entry);
-          log.scrollTop = log.scrollHeight;
+          console.log(`click #${clickNum}: content=(${cx}, ${cy}) page=(${e.clientX}, ${e.clientY})`);
 
           showDot(e.clientX, e.clientY);
 

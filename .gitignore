@@ -21,3 +21,6 @@ saves/*.json
 
 # Editor
 .claude/
+
+
+*.env
