@@ -35,3 +35,10 @@ class HarnessConfig:
     auto_navigate_to_round: bool = False
     nav_map_name: str = "monkey_lane"
     nav_difficulty: str = "easy"
+
+    # OCR backend selection:
+    # - auto: prefer EasyOCR, fallback to Tesseract
+    # - easyocr: require EasyOCR
+    # - tesseract: require Tesseract
+    ocr_backend: str = "auto"
+    ocr_easyocr_gpu: bool = False

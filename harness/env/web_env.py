@@ -161,7 +161,11 @@ class BloonsWebEnv:
     def _get_reader(self) -> GameStateReader:
         if self._state_reader is None:
             debug_dir = self.run_dir / "ocr_debug" if self.run_dir else None
-            self._state_reader = GameStateReader(debug_dir=debug_dir)
+            self._state_reader = GameStateReader(
+                debug_dir=debug_dir,
+                backend=self.cfg.ocr_backend,
+                easyocr_gpu=self.cfg.ocr_easyocr_gpu,
+            )
         return self._state_reader
 
     def _update_state(self, screenshot_path: str | Path | None = None) -> None:

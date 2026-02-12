@@ -16,17 +16,21 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
 import json
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import requests
+from PIL import Image
 from harness.env.config import HarnessConfig
+from harness.env.profile_manager import ProfileManager
 from harness.env.web_env import BloonsWebEnv
 from harness.mcp_server import INSTRUCTIONS, TOOL_DEFS, _format_tower_list, _format_status
 
@@ -34,6 +38,9 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_ACTIONS_PER_TICK = 25  # safety cap per observation cycle
 DISTILL_THRESHOLD = 80  # trigger distillation when messages exceed this
 KEEP_IMAGES = 1  # only keep the most recent screenshot
+MAX_IMAGE_SIDE = 960
+JPEG_QUALITY = 60
+MAX_DISTILL_CHARS = 1800
 
 
 # ── .env loading ─────────────────────────────────────────────────
@@ -133,15 +140,19 @@ def execute_tool(env, name, args):
 # ── Image helpers ────────────────────────────────────────────────
 
 def encode_image(path):
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("ascii")
+    with Image.open(path) as img:
+        img = img.convert("RGB")
+        img.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+        return base64.b64encode(buf.getvalue()).decode("ascii"), "image/jpeg"
 
 
-def make_image_message(image_b64, text, role="user"):
+def make_image_message(image_b64, text, role="user", mime_type="image/png"):
     return {
         "role": role,
         "content": [
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}},
             {"type": "text", "text": text},
         ],
     }
@@ -174,9 +185,54 @@ def _is_transient(exc):
     return isinstance(exc, transient_types)
 
 
-def call_llm(api_key, model, messages, tools, max_retries=6):
+def _write_failed_request_dump(
+    payload: dict,
+    error: str,
+    dump_dir: Path | None = None,
+    response_status: int | None = None,
+    response_body: str | None = None,
+) -> Path | None:
+    if dump_dir is None:
+        return None
+    try:
+        dump_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        out = dump_dir / f"openrouter_error_{ts}.json"
+        out.write_text(
+            json.dumps(
+                {
+                    "error": error,
+                    "response_status": response_status,
+                    "response_body": response_body,
+                    "request_payload": payload,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return out
+    except Exception:
+        return None
+
+
+def call_llm(
+    api_key,
+    model,
+    messages,
+    tools,
+    reasoning_effort="low",
+    max_retries=6,
+    error_dump_dir: Path | None = None,
+):
     attempt = 0
     while True:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "tools": tools,
+            "temperature": 0.3,
+            "reasoning": {"effort": reasoning_effort},
+        }
         try:
             resp = _session.post(
                 OPENROUTER_URL,
@@ -184,21 +240,34 @@ def call_llm(api_key, model, messages, tools, max_retries=6):
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "tools": tools,
-                    "temperature": 0.3,
-                },
+                json=payload,
                 timeout=180,
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                detail = resp.text
+                try:
+                    body = resp.json()
+                    if isinstance(body, dict):
+                        if "error" in body and isinstance(body["error"], dict):
+                            detail = body["error"].get("message") or json.dumps(body)
+                        else:
+                            detail = json.dumps(body)
+                except Exception:
+                    pass
+                raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
             data = resp.json()
             if "error" in data:
                 raise RuntimeError(data["error"].get("message", data["error"]))
             return data
         except Exception as e:
             attempt += 1
+            dump_path = _write_failed_request_dump(
+                payload=payload,
+                error=str(e),
+                dump_dir=error_dump_dir,
+            )
+            if dump_path:
+                log_stderr(f"OpenRouter error request dump: {dump_path}")
             if _is_transient(e):
                 # Kill the dead connection pool and start fresh
                 _session.close()
@@ -206,6 +275,8 @@ def call_llm(api_key, model, messages, tools, max_retries=6):
                 wait = min(2 ** attempt, 60)
                 log_stderr(f"Network error (attempt {attempt}, retrying forever): {e}. Waiting {wait}s...")
                 time.sleep(wait)
+            elif isinstance(e, RuntimeError) and "HTTP 4" in str(e) and "HTTP 429" not in str(e):
+                raise
             elif attempt < max_retries:
                 wait = min(2 ** attempt, 30)
                 log_stderr(f"API error (attempt {attempt}/{max_retries}): {e}. Retrying in {wait}s...")
@@ -229,6 +300,23 @@ def strip_old_images(messages):
             c if c.get("type") != "image_url" else {"type": "text", "text": "[screenshot]"}
             for c in messages[i]["content"]
         ]
+
+
+def _safe_recent_messages(messages, limit=6):
+    """Keep only recent non-tool-call messages to avoid broken tool-call chains."""
+    kept = []
+    for m in reversed(messages):
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        # Skip assistant tool-call wrappers; they require matching tool messages.
+        if role == "assistant" and m.get("tool_calls"):
+            continue
+        kept.append(m)
+        if len(kept) >= limit:
+            break
+    kept.reverse()
+    return kept
 
 
 DISTILL_PROMPT = """\
@@ -256,7 +344,7 @@ RULES_REMINDER = """\
 """
 
 
-def distill_context(messages, api_key, model):
+def distill_context(messages, api_key, model, reasoning_effort="low", error_dump_dir: Path | None = None):
     """Replace old messages with an LLM-generated summary. Always preserves the system prompt."""
     if len(messages) <= DISTILL_THRESHOLD:
         strip_old_images(messages)
@@ -265,10 +353,10 @@ def distill_context(messages, api_key, model):
     log_stderr(f"Distilling context ({len(messages)} messages → summary)...")
 
     system = messages[0]
-    # Keep a recent tail so the model has immediate context after distillation
+    # Keep a recent tail of only safe non-tool messages.
     recent_count = 10
     old_messages = messages[1:-recent_count]
-    recent_messages = messages[-recent_count:]
+    recent_messages = _safe_recent_messages(messages[-recent_count:], limit=6)
 
     # Build a text-only version of old messages for the distillation call
     old_text_parts = []
@@ -292,14 +380,24 @@ def distill_context(messages, api_key, model):
     # Ask the model to distill
     distill_messages = [
         {"role": "system", "content": DISTILL_PROMPT},
-        {"role": "user", "content": f"Here is the game history to summarize:\n\n{history_text}"},
+        {"role": "user", "content": f"*TOKEN DISTILLATION*: Token limit reached: please provide a summary of the gameplay history so far to maintain continuity. History: \n\n{history_text}"},
     ]
 
     try:
-        data = call_llm(api_key, model, distill_messages, tools=[], max_retries=2)
+        data = call_llm(
+            api_key,
+            model,
+            distill_messages,
+            tools=[],
+            reasoning_effort=reasoning_effort,
+            max_retries=2,
+            error_dump_dir=error_dump_dir,
+        )
         summary = data["choices"][0]["message"].get("content", "")
         if not summary:
             raise RuntimeError("Empty distillation response")
+        if len(summary) > MAX_DISTILL_CHARS:
+            summary = summary[:MAX_DISTILL_CHARS] + "\n...[trimmed]..."
         log_stderr(f"Distillation complete ({len(summary)} chars):\n{summary}")
     except Exception as e:
         log_stderr(f"Distillation failed: {e}. Falling back to hard trim.")
@@ -327,7 +425,7 @@ def log_stderr(msg):
 
 # ── Main agent loop ──────────────────────────────────────────────
 
-def run_agent(env, api_key, model, log_path, max_rounds):
+def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low", error_dump_dir: Path | None = None):
     tools = mcp_to_openai_tools()
 
     system_prompt = (
@@ -367,14 +465,14 @@ def run_agent(env, api_key, model, log_path, max_rounds):
             # ── Observe ──
             screenshot_path = env.observe(tag="agent")
             status_text = _format_status(env)
-            b64 = encode_image(str(screenshot_path))
+            b64, mime = encode_image(str(screenshot_path))
 
             prompt_text = f"Current status:\n{status_text}\n\nDecide your next actions."
             if idle_ticks >= 3:
                 prompt_text += "\n\nPlease use the available tools to take action."
                 idle_ticks = 0
 
-            messages.append(make_image_message(b64, prompt_text))
+            messages.append(make_image_message(b64, prompt_text, mime_type=mime))
 
             # Parse game state from status for the tick header
             gs = env.read_game_state()
@@ -397,7 +495,14 @@ def run_agent(env, api_key, model, log_path, max_rounds):
             did_act = False
 
             while actions_this_tick < MAX_ACTIONS_PER_TICK:
-                data = call_llm(api_key, model, messages, tools)
+                data = call_llm(
+                    api_key,
+                    model,
+                    messages,
+                    tools,
+                    reasoning_effort=reasoning_effort,
+                    error_dump_dir=error_dump_dir,
+                )
 
                 # Track usage
                 usage = data.get("usage", {})
@@ -463,13 +568,19 @@ def run_agent(env, api_key, model, log_path, max_rounds):
 
                 # If model called observe, inject the image so it can see it
                 if inject_screenshot and inject_path:
-                    b64 = encode_image(inject_path)
+                    b64, mime = encode_image(inject_path)
                     messages.append(make_image_message(
-                        b64, "Here is the screenshot you requested. Continue."
+                        b64, "Here is the screenshot you requested. Continue.", mime_type=mime
                     ))
 
             # ── Distill context if needed ──
-            messages = distill_context(messages, api_key, model)
+            messages = distill_context(
+                messages,
+                api_key,
+                model,
+                reasoning_effort=reasoning_effort,
+                error_dump_dir=error_dump_dir,
+            )
 
             log_action({
                 "tick": tick,
@@ -508,9 +619,16 @@ def main():
     parser.add_argument("--model", required=True, help="OpenRouter model ID")
     parser.add_argument("--max-rounds", type=int, default=0, help="Stop after N rounds (0 = infinite)")
     parser.add_argument("--swf", default="game/btd5.swf")
-    parser.add_argument("--saves", default="saves/unlocks_maxed.json")
+    parser.add_argument("--profile", default="default", help="Persistent profile name")
+    parser.add_argument("--saves", default=None, help="Optional save JSON to inject before load")
     parser.add_argument("--map", default="monkey_lane")
     parser.add_argument("--difficulty", default="easy")
+    parser.add_argument(
+        "--reasoning",
+        default="low",
+        choices=["low", "medium", "high"],
+        help="Reasoning effort passed to the model (default: low)",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -518,9 +636,14 @@ def main():
     if not api_key:
         sys.exit("Error: OPENROUTER_API_KEY not found. Set it in .env or your environment.")
 
+    pm = ProfileManager(REPO_ROOT)
+    persistent = pm.persistent_profile_dir(args.profile)
+
     # Launch game
     cfg = HarnessConfig(
         headless=False,
+        persistent_profile_dir=persistent,
+        autosave_profile=True,
         auto_navigate_to_round=True,
         nav_map_name=args.map,
         nav_difficulty=args.difficulty,
@@ -540,7 +663,15 @@ def main():
     log_path = run_dir / "agent_log.jsonl"
 
     try:
-        run_agent(env, api_key, args.model, log_path, args.max_rounds)
+        run_agent(
+            env,
+            api_key,
+            args.model,
+            log_path,
+            args.max_rounds,
+            reasoning_effort=args.reasoning,
+            error_dump_dir=run_dir,
+        )
     finally:
         env.close()
 

@@ -1,4 +1,4 @@
-"""Read in-game HUD values (cash, lives, round) from a single screenshot via Tesseract OCR."""
+"""Read in-game HUD values (cash, lives, round) from a single screenshot via OCR."""
 
 from __future__ import annotations
 
@@ -6,16 +6,30 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
+from typing import Literal, Tuple
 
 logger = logging.getLogger(__name__)
 
 try:
-    import pytesseract
     from PIL import Image
-    _HAS_DEPS = True
+    _HAS_PIL = True
 except ImportError:
-    _HAS_DEPS = False
+    _HAS_PIL = False
+
+try:
+    import easyocr
+    import numpy as np
+
+    _HAS_EASYOCR = True
+except ImportError:
+    _HAS_EASYOCR = False
+
+try:
+    import pytesseract
+
+    _HAS_TESSERACT = True
+except ImportError:
+    _HAS_TESSERACT = False
 
 
 @dataclass
@@ -42,9 +56,101 @@ OK_BRIGHTNESS_THRESHOLD = 0.30  # fraction of bright pixels to trigger detection
 class GameStateReader:
     """Reads cash, lives, round, and detects OK dialog from a single screenshot."""
 
-    def __init__(self, debug_dir: Path | None = None):
+    def __init__(
+        self,
+        debug_dir: Path | None = None,
+        backend: Literal["auto", "easyocr", "tesseract"] = "auto",
+        easyocr_gpu: bool = False,
+    ):
         self._debug_dir = debug_dir
         self._seq = 0
+        self._easyocr_gpu = easyocr_gpu
+        self._easy_reader = None
+        self._warned_unavailable = False
+
+        requested = (backend or "auto").lower()
+        if requested not in {"auto", "easyocr", "tesseract"}:
+            raise ValueError(f"Unknown OCR backend: {backend!r}")
+        self._requested_backend = requested
+        self._resolved_backend = self._resolve_backend()
+        logger.info("OCR backend requested=%s resolved=%s", self._requested_backend, self._resolved_backend)
+
+    def _resolve_backend(self) -> str:
+        if not _HAS_PIL:
+            return "none"
+        if self._requested_backend == "easyocr":
+            return "easyocr" if _HAS_EASYOCR else "none"
+        if self._requested_backend == "tesseract":
+            return "tesseract" if _HAS_TESSERACT else "none"
+        # auto: prefer EasyOCR first, then Tesseract
+        if _HAS_EASYOCR:
+            return "easyocr"
+        if _HAS_TESSERACT:
+            return "tesseract"
+        return "none"
+
+    def _get_easyocr_reader(self):
+        if self._easy_reader is None:
+            self._easy_reader = easyocr.Reader(["en"], gpu=self._easyocr_gpu, verbose=False)
+        return self._easy_reader
+
+    def _ocr_crop_easyocr(self, crop: "Image.Image", label: str) -> tuple[int | None, "Image.Image"]:
+        reader = self._get_easyocr_reader()
+        arr = np.array(crop)
+
+        # Raw crop in, modern recognizer handles stylized fonts better than
+        # brittle manual thresholding for this HUD.
+        results = reader.readtext(
+            arr,
+            detail=1,
+            paragraph=False,
+            allowlist="0123456789$,",
+        )
+        if not results:
+            logger.debug("EasyOCR [%s] returned no text", label)
+            return None, crop
+
+        best_digits: str | None = None
+        best_score = (-1.0, -1)  # (confidence, digit_count)
+        for row in results:
+            if len(row) < 3:
+                continue
+            text = str(row[1])
+            conf = float(row[2]) if row[2] is not None else 0.0
+            digits = re.sub(r"[^0-9]", "", text)
+            if not digits:
+                continue
+            score = (conf, len(digits))
+            if score > best_score:
+                best_score = score
+                best_digits = digits
+
+        if not best_digits:
+            merged = "".join(str(row[1]) for row in results if len(row) >= 2)
+            merged_digits = re.sub(r"[^0-9]", "", merged)
+            if not merged_digits:
+                logger.debug("EasyOCR [%s] returned no digits from rows=%r", label, results)
+                return None, crop
+            best_digits = merged_digits
+
+        return int(best_digits), crop
+
+    def _ocr_crop_tesseract(self, crop: "Image.Image", label: str) -> tuple[int | None, "Image.Image"]:
+        gray = crop.convert("L")
+
+        # Legacy fallback pipeline for Tesseract.
+        binary = gray.point(lambda p: 0 if p > 160 else 255)  # invert: dark text on white
+        scaled = binary.resize((binary.width * 4, binary.height * 4), Image.LANCZOS)
+
+        text = pytesseract.image_to_string(
+            scaled,
+            config="--psm 7 -c tessedit_char_whitelist=0123456789$,",
+        )
+        digits = re.sub(r"[^0-9]", "", text)
+        if not digits:
+            logger.debug("Tesseract [%s] returned no digits from text: %r", label, text)
+            return None, scaled
+        return int(digits), scaled
 
     def _ocr_crop(
         self,
@@ -57,29 +163,21 @@ class GameStateReader:
         """Crop a region from a full screenshot, preprocess, OCR, return int or None."""
         rx, ry, rw, rh = region
         crop = full_img.crop((cx + rx, cy + ry, cx + rx + rw, cy + ry + rh))
-        gray = crop.convert("L")
 
-        # Strict threshold — no blur, high cutoff to kill shadows between digits
-        binary = gray.point(lambda p: 0 if p > 160 else 255)  # invert: dark text on white
-
-        # Scale up with smooth interpolation
-        scaled = binary.resize((binary.width * 4, binary.height * 4), Image.LANCZOS)
+        guess: int | None = None
+        proc = crop
+        if self._resolved_backend == "easyocr":
+            guess, proc = self._ocr_crop_easyocr(crop, label)
+        elif self._resolved_backend == "tesseract":
+            guess, proc = self._ocr_crop_tesseract(crop, label)
 
         if self._debug_dir is not None:
             self._debug_dir.mkdir(parents=True, exist_ok=True)
-            crop.save(self._debug_dir / f"{label}_raw_{self._seq:04d}.png")
-            scaled.save(self._debug_dir / f"{label}_proc_{self._seq:04d}.png")
+            guess_tag = str(guess) if guess is not None else "FAIL"
+            crop.save(self._debug_dir / f"{label}_raw_{self._seq:04d}_{guess_tag}.png")
+            proc.save(self._debug_dir / f"{label}_proc_{self._seq:04d}_{guess_tag}.png")
 
-        text = pytesseract.image_to_string(
-            scaled,
-            config="--psm 7 -c tessedit_char_whitelist=0123456789$,",
-        )
-
-        digits = re.sub(r"[^0-9]", "", text)
-        if not digits:
-            logger.debug("OCR [%s] returned no digits from text: %r", label, text)
-            return None
-        return int(digits)
+        return guess
 
     def _detect_ok(
         self,
@@ -108,12 +206,17 @@ class GameStateReader:
 
         Returns (game_state, ok_button_visible).
         """
-        if not _HAS_DEPS:
-            logger.warning(
-                "pytesseract or Pillow not installed — OCR unavailable. "
-                "Install with: pip install pytesseract Pillow  "
-                "and brew install tesseract"
-            )
+        if not _HAS_PIL:
+            logger.warning("Pillow not installed — OCR unavailable. Install with: pip install Pillow")
+            return GameState(), False
+        if self._resolved_backend == "none":
+            if not self._warned_unavailable:
+                logger.warning(
+                    "No OCR backend available (requested=%s). Install easyocr for best results "
+                    "or pytesseract+tesseract as fallback.",
+                    self._requested_backend,
+                )
+                self._warned_unavailable = True
             return GameState(), False
 
         img = Image.open(screenshot_path)

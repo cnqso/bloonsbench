@@ -18,6 +18,7 @@ game/*.swf
 # Saves (user-specific, export your own)
 saves/*.json
 !saves/unlocks_maxed.json
+!saves/default.json
 
 # Editor
 .claude/
