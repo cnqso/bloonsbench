@@ -19,6 +19,7 @@ import base64
 import io
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -29,6 +30,17 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import requests
 from PIL import Image
+try:
+    import easyocr
+    import numpy as np
+    _HAS_EASYOCR = True
+except ImportError:
+    _HAS_EASYOCR = False
+try:
+    import pytesseract
+    _HAS_TESSERACT = True
+except ImportError:
+    _HAS_TESSERACT = False
 from harness.env.config import HarnessConfig
 from harness.env.profile_manager import ProfileManager
 from harness.env.web_env import BloonsWebEnv
@@ -41,6 +53,11 @@ KEEP_IMAGES = 1  # only keep the most recent screenshot
 MAX_IMAGE_SIDE = 960
 JPEG_QUALITY = 60
 MAX_DISTILL_CHARS = 1800
+GO_POLL_INTERVAL_MS = 2500
+GO_REGION = (914, 581, 998, 624)  # screenshot-absolute crop for "Go!" button
+OK_REGION = (674, 406, 775, 466)  # screenshot-absolute crop for "OK!" popup button
+OK_CLICK = (724, 436)  # screenshot-absolute center of popup button
+GAME_OVER_REGION = (353, 189, 645, 243)  # screenshot-absolute crop for "GAME OVER" title
 
 
 # ── .env loading ─────────────────────────────────────────────────
@@ -75,7 +92,7 @@ def mcp_to_openai_tools():
 
 # ── Tool execution ───────────────────────────────────────────────
 
-def execute_tool(env, name, args):
+def execute_tool(env, name, args, screenshot_hook=None):
     """Run a tool call against the live game.
 
     Returns (text_result, image_path | None).
@@ -84,6 +101,8 @@ def execute_tool(env, name, args):
     try:
         if name == "observe":
             path = env.observe(tag="agent")
+            if screenshot_hook:
+                path = screenshot_hook(Path(path), "tool_observe")
             return "Screenshot taken.", str(path)
 
         if name == "place_tower":
@@ -156,6 +175,149 @@ def make_image_message(image_b64, text, role="user", mime_type="image/png"):
             {"type": "text", "text": text},
         ],
     }
+
+
+_easy_go_reader = None
+
+
+def _get_easy_go_reader():
+    global _easy_go_reader
+    if _easy_go_reader is None:
+        _easy_go_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+    return _easy_go_reader
+
+
+def _ocr_go_text(crop: Image.Image) -> tuple[str, Image.Image]:
+    """Return (text_guess, processed_image_for_debug)."""
+    if _HAS_EASYOCR:
+        reader = _get_easy_go_reader()
+        arr = np.array(crop.convert("RGB"))
+        rows = reader.readtext(arr, detail=1, paragraph=False, allowlist="GoGO! ")
+        text = " ".join(str(r[1]) for r in rows if len(r) >= 2).strip()
+        return text, crop
+
+    # Fallback: Tesseract on a simple enlarged grayscale crop.
+    proc = crop.convert("L").resize((crop.width * 3, crop.height * 3), Image.LANCZOS)
+    if _HAS_TESSERACT:
+        text = pytesseract.image_to_string(
+            proc,
+            config="--psm 7 -c tessedit_char_whitelist=GoGO! ",
+        ).strip()
+        return text, proc
+    return "", proc
+
+
+def _ocr_ok_text(crop: Image.Image) -> tuple[str, Image.Image]:
+    """Return OCR text for OK button region."""
+    if _HAS_EASYOCR:
+        reader = _get_easy_go_reader()
+        arr = np.array(crop.convert("RGB"))
+        rows = reader.readtext(arr, detail=1, paragraph=False, allowlist="OKok! ")
+        text = " ".join(str(r[1]) for r in rows if len(r) >= 2).strip()
+        return text, crop
+
+    proc = crop.convert("L").resize((crop.width * 3, crop.height * 3), Image.LANCZOS)
+    if _HAS_TESSERACT:
+        text = pytesseract.image_to_string(
+            proc,
+            config="--psm 7 -c tessedit_char_whitelist=OKok! ",
+        ).strip()
+        return text, proc
+    return "", proc
+
+
+def _ocr_game_over_text(crop: Image.Image) -> tuple[str, Image.Image]:
+    """Return OCR text for GAME OVER title region."""
+    if _HAS_EASYOCR:
+        reader = _get_easy_go_reader()
+        arr = np.array(crop.convert("RGB"))
+        rows = reader.readtext(arr, detail=1, paragraph=False, allowlist="GAMEOVERgameover ")
+        text = " ".join(str(r[1]) for r in rows if len(r) >= 2).strip()
+        return text, crop
+
+    proc = crop.convert("L").resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+    if _HAS_TESSERACT:
+        text = pytesseract.image_to_string(
+            proc,
+            config="--psm 6 -c tessedit_char_whitelist=GAMEOVERgameover ",
+        ).strip()
+        return text, proc
+    return "", proc
+
+
+def _dismiss_ok_popup_if_present(env, shot_path: Path, run_dir: Path, tag: str) -> Path:
+    """Run popup OCR on a screenshot; click OK and rescreenshot when detected."""
+    ocr_dir = run_dir / "ocr_debug"
+    ocr_dir.mkdir(parents=True, exist_ok=True)
+
+    with Image.open(shot_path) as img:
+        crop = img.crop(OK_REGION)
+        text, proc = _ocr_ok_text(crop)
+
+    cleaned = re.sub(r"\s+", "", text).strip()
+    guess_tag = cleaned if cleaned else "FAIL"
+    guess_tag = re.sub(r"[^A-Za-z0-9_!.-]", "_", guess_tag)[:40]
+    crop.save(ocr_dir / f"ok_raw_{tag}_{guess_tag}.png")
+    proc.save(ocr_dir / f"ok_proc_{tag}_{guess_tag}.png")
+
+    if cleaned:
+        log_stderr(f"Popup detector: OK text={cleaned!r} — clicking OK")
+        env.page.mouse.click(OK_CLICK[0], OK_CLICK[1])
+        env.page.wait_for_timeout(300)
+        return env.observe(tag=f"{tag}_after_ok")
+
+    return shot_path
+
+
+def _observe_with_popup_guard(env, run_dir: Path, tag: str) -> Path:
+    shot = env.observe(tag=tag)
+    return _dismiss_ok_popup_if_present(env, Path(shot), run_dir, tag)
+
+
+def _wait_for_go_button(env, run_dir: Path, round_started_count: int) -> bool:
+    """Poll until GO text is detected, or stop early on GAME OVER detection."""
+    if not _HAS_EASYOCR and not _HAS_TESSERACT:
+        raise RuntimeError("GO button OCR polling requires easyocr or pytesseract installed")
+
+    poll_idx = 0
+    ocr_dir = run_dir / "ocr_debug"
+    ocr_dir.mkdir(parents=True, exist_ok=True)
+
+    while True:
+        tag = f"go_wait_r{round_started_count:03d}_{poll_idx:04d}"
+        shot = _observe_with_popup_guard(env, run_dir, tag)
+        with Image.open(shot) as img:
+            go_crop = img.crop(GO_REGION)
+            go_text, go_proc = _ocr_go_text(go_crop)
+            game_over_crop = img.crop(GAME_OVER_REGION)
+            game_over_text, game_over_proc = _ocr_game_over_text(game_over_crop)
+
+        go_cleaned = re.sub(r"\s+", "", go_text).strip()
+        go_guess_tag = go_cleaned if go_cleaned else "FAIL"
+        go_guess_tag = re.sub(r"[^A-Za-z0-9_!.-]", "_", go_guess_tag)[:40]
+        go_crop.save(ocr_dir / f"go_raw_r{round_started_count:03d}_{poll_idx:04d}_{go_guess_tag}.png")
+        go_proc.save(ocr_dir / f"go_proc_r{round_started_count:03d}_{poll_idx:04d}_{go_guess_tag}.png")
+
+        game_over_cleaned = re.sub(r"[^A-Za-z]", "", game_over_text).upper()
+        game_over_guess = game_over_cleaned if game_over_cleaned else "FAIL"
+        game_over_guess = re.sub(r"[^A-Za-z0-9_!.-]", "_", game_over_guess)[:40]
+        game_over_crop.save(
+            ocr_dir / f"game_over_raw_r{round_started_count:03d}_{poll_idx:04d}_{game_over_guess}.png"
+        )
+        game_over_proc.save(
+            ocr_dir / f"game_over_proc_r{round_started_count:03d}_{poll_idx:04d}_{game_over_guess}.png"
+        )
+
+        if "GAMEOVER" in game_over_cleaned:
+            log_stderr(f"Round end detector: GAME OVER text={game_over_text!r} (poll={poll_idx})")
+            return False
+
+        if go_cleaned:
+            log_stderr(f"Round complete detector: GO text={go_cleaned!r} (poll={poll_idx})")
+            return True
+
+        poll_idx += 1
+        env.page.wait_for_timeout(GO_POLL_INTERVAL_MS)
 
 
 # ── API call with retry ─────────────────────────────────────────
@@ -446,7 +608,8 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
 
     messages = [{"role": "system", "content": system_prompt}]
     total_tokens = {"prompt": 0, "completion": 0}
-    round_num = 0
+    tracked_round = 1
+    rounds_started = 0
     tick = 0
     idle_ticks = 0  # ticks where model returned no tool calls
 
@@ -459,15 +622,18 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
             log_file.flush()
 
     try:
-        while max_rounds <= 0 or round_num < max_rounds:
+        while max_rounds <= 0 or rounds_started < max_rounds:
             tick += 1
 
             # ── Observe ──
-            screenshot_path = env.observe(tag="agent")
+            screenshot_path = _observe_with_popup_guard(env, env.run_dir, "agent")
             status_text = _format_status(env)
             b64, mime = encode_image(str(screenshot_path))
 
-            prompt_text = f"Current status:\n{status_text}\n\nDecide your next actions."
+            prompt_text = (
+                f"Tracked round (authoritative): {tracked_round}\n"
+                f"Current status:\n{status_text}\n\nDecide your next actions."
+            )
             if idle_ticks >= 3:
                 prompt_text += "\n\nPlease use the available tools to take action."
                 idle_ticks = 0
@@ -476,14 +642,12 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
 
             # Parse game state from status for the tick header
             gs = env.read_game_state()
-            if gs.round_num is not None:
-                round_num = gs.round_num
             cash_display = f"${gs.cash}" if gs.cash is not None else "?"
             lives_display = str(gs.lives) if gs.lives is not None else "?"
 
             log_stderr(
                 f"{'=' * 50}\n"
-                f"[{time.strftime('%H:%M:%S')}] Tick {tick} | Round {round_num}"
+                f"[{time.strftime('%H:%M:%S')}] Tick {tick} | Round {tracked_round}"
                 f" | Cash: {cash_display} | Lives: {lives_display}"
                 f" | Towers: {len(env.get_placed_towers())}"
                 f" | Tokens: {sum(total_tokens.values())}\n"
@@ -493,6 +657,7 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
             # ── Inner action loop ──
             actions_this_tick = 0
             did_act = False
+            round_started_this_tick = False
 
             while actions_this_tick < MAX_ACTIONS_PER_TICK:
                 data = call_llm(
@@ -540,7 +705,17 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
                     except (json.JSONDecodeError, TypeError):
                         args = {}
 
-                    result_text, img_path = execute_tool(env, name, args)
+                    # Strict pre-action guard: always clear popup state before every action.
+                    if env.run_dir is None:
+                        raise RuntimeError("run_dir missing before pre-action popup guard")
+                    _observe_with_popup_guard(env, env.run_dir, f"pre_action_t{tick:04d}_{actions_this_tick:03d}")
+
+                    result_text, img_path = execute_tool(
+                        env,
+                        name,
+                        args,
+                        screenshot_hook=lambda p, t: _dismiss_ok_popup_if_present(env, p, env.run_dir, t),
+                    )
                     actions_this_tick += 1
 
                     log_stderr(f"  tool: {name}({json.dumps(args)}) → {result_text}")
@@ -553,18 +728,25 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
 
                     log_action({
                         "tick": tick,
-                        "round": round_num,
+                        "round": tracked_round,
                         "tool": name,
                         "args": args,
                         "result": result_text,
                     })
 
                     if name == "start_round":
-                        round_num += 1
+                        rounds_started += 1
+                        round_started_this_tick = True
 
                     if img_path:
                         inject_screenshot = True
                         inject_path = img_path
+
+                    if round_started_this_tick:
+                        break
+
+                if round_started_this_tick:
+                    break
 
                 # If model called observe, inject the image so it can see it
                 if inject_screenshot and inject_path:
@@ -572,6 +754,17 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
                     messages.append(make_image_message(
                         b64, "Here is the screenshot you requested. Continue.", mime_type=mime
                     ))
+
+            # On start_round, wait until Go button returns before next LLM turn.
+            if round_started_this_tick:
+                log_stderr("Round started by agent; waiting for GO button to return...")
+                if env.run_dir is None:
+                    raise RuntimeError("run_dir missing while waiting for GO button")
+                round_completed = _wait_for_go_button(env, env.run_dir, rounds_started)
+                if not round_completed:
+                    log_stderr("Detected GAME OVER while waiting for round completion. Stopping agent run.")
+                    break
+                tracked_round += 1
 
             # ── Distill context if needed ──
             messages = distill_context(
@@ -584,7 +777,7 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
 
             log_action({
                 "tick": tick,
-                "round": round_num,
+                "round": tracked_round,
                 "event": "tick_end",
                 "actions": actions_this_tick,
                 "message_count": len(messages),
@@ -599,7 +792,7 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
         traceback.print_exc(file=sys.stderr)
     finally:
         log_stderr(
-            f"\nDone: {tick} ticks, ~{round_num} rounds started,"
+            f"\nDone: {tick} ticks, {rounds_started} rounds started,"
             f" {sum(total_tokens.values())} tokens used"
         )
         if log_file:

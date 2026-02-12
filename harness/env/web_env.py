@@ -158,6 +158,16 @@ class BloonsWebEnv:
 
     # ── Screenshot + OCR core ────────────────────────────────────────
 
+    def _capture_screenshot(self, path: str | Path) -> None:
+        """Capture viewport screenshot with options that reduce headful jitter."""
+        assert self.page
+        self.page.screenshot(
+            path=str(path),
+            animations="disabled",
+            caret="hide",
+            scale="css",
+        )
+
     def _get_reader(self) -> GameStateReader:
         if self._state_reader is None:
             debug_dir = self.run_dir / "ocr_debug" if self.run_dir else None
@@ -183,7 +193,7 @@ class BloonsWebEnv:
             tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
             screenshot_path = tmp.name
             tmp.close()
-            self.page.screenshot(path=screenshot_path, full_page=True)
+            self._capture_screenshot(screenshot_path)
             cleanup = True
 
         state, ok_detected = reader.update(str(screenshot_path), box)
@@ -200,7 +210,7 @@ class BloonsWebEnv:
             tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
             screenshot_path = tmp.name
             tmp.close()
-            self.page.screenshot(path=screenshot_path, full_page=True)
+            self._capture_screenshot(screenshot_path)
             cleanup = True
             state, _ = reader.update(str(screenshot_path), box)
 
@@ -214,7 +224,7 @@ class BloonsWebEnv:
         assert self.page and self.logger and self.run_dir
         fname = f"{tag}_{int(time.time()*1000)}.png"
         out = self.run_dir / fname
-        self.page.screenshot(path=str(out), full_page=True)
+        self._capture_screenshot(out)
 
         # Run OCR + OK detection on this same screenshot (no extra screenshot)
         box = _get_container_box(self.page)
@@ -227,7 +237,7 @@ class BloonsWebEnv:
             if self.logger:
                 self.logger.log("auto_dismiss_ok")
             # Retake since dialog changed the screen
-            self.page.screenshot(path=str(out), full_page=True)
+            self._capture_screenshot(out)
             state, _ = self._get_reader().update(str(out), box)
 
         self._last_game_state = state
