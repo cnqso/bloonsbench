@@ -40,8 +40,23 @@ python scripts/web_smoke.py
 # Manual play with persistent profile (for unlocking)
 python scripts/run_persistent_profile.py --profile unlocks
 
+# Start a clean new local save profile
+python scripts/run_persistent_profile.py --profile my_save --fresh-start
+
 # Export saves from profile
 python scripts/export_saves.py --profile unlocks
+
+# Decode save JSON into readable profile fields
+python scripts/decode_saves.py --input saves/my_save.json
+
+# Re-encode decoded JSON back into save JSON (lossless roundtrip)
+python scripts/encode_decoded_saves.py --input saves/save2.sol.decoded.json --output saves/hacked_save.json
+
+# If you manually edited save2.sol.decoded.json, apply those edits when encoding
+python scripts/encode_decoded_saves.py --input saves/save2.sol.decoded.json --output saves/hacked_save.json --apply-edits
+
+# Load that save into a new persistent profile
+python scripts/run_persistent_profile.py --profile hacked_save --fresh-start --seed-saves saves/hacked_save.json
 
 # Verify save injection in fresh browser
 python scripts/verify_saves.py --saves saves/unlocks.json
@@ -59,3 +74,4 @@ Ruffle stores Flash SharedObjects in `localStorage` as base64-encoded SOL bytes.
 3. Calls `window.__BLOONSBENCH__.loadGame()` to start the game with pre-populated saves
 
 The local HTTP server uses a fixed port (8890) so `localStorage` persists across sessions on the same origin.
+Save injection is opt-in (`save_data_path` must be set explicitly).

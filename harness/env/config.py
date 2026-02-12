@@ -28,7 +28,9 @@ class HarnessConfig:
     server_port: Optional[int] = 8890
 
     block_network: bool = True
-    save_data_path: Optional[Path] = Path(__file__).resolve().parents[2] / "saves" / "unlocks_maxed.json"
+    # Save injection is opt-in. Set this path explicitly when you want to
+    # pre-populate localStorage before loading the game.
+    save_data_path: Optional[Path] = None
 
     auto_navigate_to_round: bool = False
     nav_map_name: str = "monkey_lane"
