@@ -22,6 +22,9 @@ import os
 import re
 import sys
 import time
+import warnings
+
+warnings.filterwarnings("ignore", message=".*pin_memory.*")
 from datetime import datetime
 from pathlib import Path
 
@@ -42,7 +45,6 @@ try:
 except ImportError:
     _HAS_TESSERACT = False
 from harness.env.config import HarnessConfig
-from harness.env.profile_manager import ProfileManager
 from harness.env.web_env import BloonsWebEnv
 from harness.mcp_server import INSTRUCTIONS, TOOL_DEFS, _format_tower_list, _format_status
 
@@ -812,7 +814,11 @@ def main():
     parser.add_argument("--model", required=True, help="OpenRouter model ID")
     parser.add_argument("--max-rounds", type=int, default=0, help="Stop after N rounds (0 = infinite)")
     parser.add_argument("--swf", default="game/btd5.swf")
-    parser.add_argument("--profile", default="default", help="Persistent profile name")
+    parser.add_argument(
+        "--profile",
+        default="profiles/persistent/default/chromium-profile",
+        help="Persistent Chromium profile dir (relative to repo root)",
+    )
     parser.add_argument("--saves", default=None, help="Optional save JSON to inject before load")
     parser.add_argument("--map", default="monkey_lane")
     parser.add_argument("--difficulty", default="easy")
@@ -829,14 +835,10 @@ def main():
     if not api_key:
         sys.exit("Error: OPENROUTER_API_KEY not found. Set it in .env or your environment.")
 
-    pm = ProfileManager(REPO_ROOT)
-    persistent = pm.persistent_profile_dir(args.profile)
-
     # Launch game
     cfg = HarnessConfig(
         headless=False,
-        persistent_profile_dir=persistent,
-        autosave_profile=True,
+        persistent_profile_dir=REPO_ROOT / args.profile,
         auto_navigate_to_round=True,
         nav_map_name=args.map,
         nav_difficulty=args.difficulty,

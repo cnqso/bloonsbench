@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -25,7 +24,6 @@ from harness.perception.cash_ocr import GameStateReader, GameState, OK_CLICK_TAR
 from harness.runtime.local_http import LocalServer, serve_directory
 from harness.runtime.ruffle_web_vendor import ensure_ruffle_web
 from harness.trace.logger import TraceLogger
-from harness.env.profile_manager import ProfileManager
 
 
 def _ts() -> str:
@@ -107,15 +105,13 @@ class BloonsWebEnv:
         if use_deferred:
             url += "&defer=1"
 
-        # Browser profile
+        # Browser profile — reuse persistent dir when configured,
+        # otherwise create an ephemeral per-run profile.
         profile_dir = self.run_dir / "chromium-profile"
         if self.cfg.persistent_profile_dir:
             profile_dir = Path(self.cfg.persistent_profile_dir).expanduser().resolve()
             profile_dir.mkdir(parents=True, exist_ok=True)
             self.logger.log("profile_persistent", dir=str(profile_dir))
-        elif self.cfg.profile_template_dir:
-            shutil.copytree(self.cfg.profile_template_dir, profile_dir, dirs_exist_ok=True)
-            self.logger.log("profile_template_copied", src=str(self.cfg.profile_template_dir))
 
         self._pw = sync_playwright().start()
         self.ctx = self._pw.chromium.launch_persistent_context(
@@ -146,7 +142,7 @@ class BloonsWebEnv:
 
         if self.cfg.auto_navigate_to_round:
             nav_dir = self.run_dir / "nav_screenshots"
-            screenshots = navigate_to_round(
+            navigate_to_round(
                 self.page,
                 map_name=self.cfg.nav_map_name,
                 difficulty=self.cfg.nav_difficulty,
@@ -372,19 +368,6 @@ class BloonsWebEnv:
         self.page.wait_for_timeout(7000)
         self._update_state()
 
-    def sample_round(self) -> list[Path]:
-        """Auto-capture screenshots at configured intervals during a round."""
-        assert self.page and self.logger
-        frames: list[Path] = []
-        t0 = time.time()
-        for dt in self.cfg.round_sample_times_s:
-            sleep_s = (t0 + dt) - time.time()
-            if sleep_s > 0:
-                self.page.wait_for_timeout(int(sleep_s * 1000))
-            frames.append(self.observe(tag=f"round_{dt:.1f}s"))
-        self.logger.log("end_round_sampling")
-        return frames
-
     def close(self) -> None:
         if self.ctx:
             try:
@@ -396,20 +379,6 @@ class BloonsWebEnv:
                 self._pw.stop()
             except Exception:
                 pass
-
-        if self.cfg.persistent_profile_dir and self.cfg.autosave_profile:
-            try:
-                pm = ProfileManager(self.repo_root)
-                persistent = Path(self.cfg.persistent_profile_dir).expanduser().resolve()
-                snap_name = datetime.now().strftime("%Y%m%d_%H%M%S")
-                snap_dir = pm.snapshot_dir(name=persistent.parent.name, snapshot_name=snap_name)
-                pm.save_snapshot(persistent, snap_dir, overwrite=False)
-                if self.logger:
-                    self.logger.log("profile_snapshot_saved", snapshot=str(snap_dir))
-            except Exception as e:
-                if self.logger:
-                    self.logger.log("profile_snapshot_error", error=str(e))
-
         if self.server:
             try:
                 self.server.httpd.shutdown()

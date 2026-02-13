@@ -16,27 +16,25 @@ from __future__ import annotations
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message=".*pin_memory.*")
 
 # Ensure repo root is on sys.path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from harness.env.config import HarnessConfig
-from harness.env.profile_manager import ProfileManager
 from harness.env.web_env import BloonsWebEnv
 from harness.mcp_server import run_server, handle_tool_call, _format_tower_list, _format_status
 
 
 def _launch_game(args: argparse.Namespace) -> BloonsWebEnv:
     """Launch the game, optionally inject saves, navigate to round start."""
-    pm = ProfileManager(REPO_ROOT)
-    persistent = pm.persistent_profile_dir(args.profile)
-
     cfg = HarnessConfig(
-        headless=False,  # Never headless
-        persistent_profile_dir=persistent,
-        autosave_profile=True,
+        headless=False,
+        persistent_profile_dir=REPO_ROOT / args.profile,
         auto_navigate_to_round=True,
         nav_map_name=args.map,
         nav_difficulty=args.difficulty,
@@ -175,7 +173,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="BloonsBench MCP server / CLI")
     parser.add_argument("--cli", action="store_true", help="Interactive CLI instead of MCP")
     parser.add_argument("--swf", default="game/btd5.swf", help="Path to SWF (relative to repo root)")
-    parser.add_argument("--profile", default="default", help="Persistent profile name")
+    parser.add_argument(
+        "--profile",
+        default="profiles/persistent/default/chromium-profile",
+        help="Persistent Chromium profile dir (relative to repo root)",
+    )
     parser.add_argument("--saves", default=None, help="Optional save file to inject")
     parser.add_argument("--map", default="monkey_lane", help="Map name")
     parser.add_argument("--difficulty", default="easy", help="Difficulty")

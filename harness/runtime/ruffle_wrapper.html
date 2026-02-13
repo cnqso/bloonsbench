@@ -3,26 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>bloonsbench ruffle wrapper</title>
+    <title>BloonsBench</title>
     <style>
-      html, body { margin: 0; padding: 0; background: #111; color: #eee; }
-      #container { width: 960px; height: 720px; margin: 12px auto; border: 1px solid #333; }
-      .note { width: 960px; margin: 6px auto; font: 12px/1.4 -apple-system, system-ui, sans-serif; color: #aaa; }
+      html, body { margin: 0; padding: 0; background: #111; }
+      #container { width: 960px; height: 720px; margin: 12px auto; }
     </style>
     <script src="./ruffle.js"></script>
   </head>
   <body>
-    <div class="note">bloonsbench harness wrapper (Ruffle Web). Use Playwright to drive this page.</div>
     <div id="container"></div>
 
     <script>
-      // Basic embed. The harness passes SWF as ?swf=...
       const params = new URLSearchParams(window.location.search);
       const swfUrl = params.get('swf');
-      if (!swfUrl) {
-        document.body.insertAdjacentHTML('beforeend', '<div class="note">Missing ?swf= URL param</div>');
-        throw new Error('Missing swf param');
-      }
+      if (!swfUrl) throw new Error('Missing ?swf= URL param');
 
       window.RufflePlayer = window.RufflePlayer || {};
       window.RufflePlayer.config = {
@@ -31,14 +25,10 @@
       };
       const ruffle = window.RufflePlayer.newest();
       const player = ruffle.createPlayer();
-
-      // Deterministic-ish sizing
       player.style.width = '100%';
       player.style.height = '100%';
-
       document.getElementById('container').appendChild(player);
 
-      // Expose the player for automation hooks
       const defer = params.get('defer') === '1';
       window.__BLOONSBENCH__ = {
         player,
@@ -52,62 +42,9 @@
         }
       };
 
-      // Load immediately unless deferred
       if (!defer) {
         window.__BLOONSBENCH__.loadGame();
       }
-
-      // --- Debug overlay: coordinate logger + single red click dot ---
-      (function() {
-        const container = document.getElementById('container');
-
-        // Coordinate display (top-right)
-        const overlay = document.createElement('div');
-        overlay.id = 'coord-overlay';
-        overlay.style.cssText = `
-          position: fixed; top: 10px; right: 10px; z-index: 99999;
-          background: rgba(0,0,0,0.85); color: #0f0; font: bold 13px monospace;
-          padding: 8px 12px; border-radius: 6px; pointer-events: none;
-          min-width: 240px;
-        `;
-        overlay.textContent = 'Click to log coords';
-        document.body.appendChild(overlay);
-
-        let clickNum = 0;
-        let currentDot = null;
-
-        // Red dot at click location — only the most recent one
-        function showDot(x, y) {
-          if (currentDot) currentDot.remove();
-          const dot = document.createElement('div');
-          dot.style.cssText = `
-            position: fixed; left: ${x - 6}px; top: ${y - 6}px;
-            width: 12px; height: 12px; border-radius: 50%;
-            background: red; border: 2px solid white;
-            z-index: 99998; pointer-events: none;
-            opacity: 0.9;
-          `;
-          document.body.appendChild(dot);
-          currentDot = dot;
-        }
-
-        document.addEventListener('click', function(e) {
-          clickNum++;
-          const cbox = container.getBoundingClientRect();
-          const cx = Math.round(e.clientX - cbox.x);
-          const cy = Math.round(e.clientY - cbox.y);
-
-          overlay.innerHTML = `Page: (${e.clientX}, ${e.clientY})<br><b>Content: (${cx}, ${cy})</b>`;
-          console.log(`click #${clickNum}: content=(${cx}, ${cy}) page=(${e.clientX}, ${e.clientY})`);
-
-          showDot(e.clientX, e.clientY);
-
-          window.__LAST_CLICK__ = {num: clickNum, contentX: cx, contentY: cy};
-        }, true);
-
-        // Also expose showDot for programmatic clicks from Playwright
-        window.__BLOONSBENCH__.showDot = showDot;
-      })();
     </script>
   </body>
 </html>

@@ -284,10 +284,6 @@ def validate_placement(
 def _click(page: Page, coord: NavCoord, container_box: dict) -> None:
     abs_x = container_box["x"] + coord.x
     abs_y = container_box["y"] + coord.y
-    try:
-        page.evaluate(f"window.__BLOONSBENCH__?.showDot?.({abs_x}, {abs_y})")
-    except Exception:
-        pass
     page.mouse.click(abs_x, abs_y)
 
 

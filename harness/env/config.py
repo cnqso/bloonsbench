@@ -16,11 +16,11 @@ class HarnessConfig:
     headless: bool = False
     ruffle_tag: str = "nightly-2026-02-09"
 
+    # Reuse a Chromium profile dir across runs so localStorage (game saves)
+    # persists.  When set, the browser opens this dir instead of creating
+    # an ephemeral per-run profile.
     persistent_profile_dir: Optional[Path] = None
-    profile_template_dir: Optional[Path] = None
-    autosave_profile: bool = True
 
-    round_sample_times_s: tuple[float, ...] = (0.5, 2.0, 5.0)
     startup_wait_s: float = 13.0
 
     # Fixed port for local HTTP server. Pinning ensures localStorage

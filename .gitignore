@@ -15,13 +15,13 @@ profiles/
 # Game files (not distributed)
 game/*.swf
 
-# Saves (user-specific, export your own)
+# Saves (user-specific)
 saves/*.json
 !saves/unlocks_maxed.json
 !saves/default.json
 
+# Environment
+*.env
+
 # Editor
 .claude/
-
-
-*.env

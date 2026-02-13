@@ -1,29 +1,12 @@
-# bloonsbench
+# BloonsBench
 
-Programmatic harness for **Bloons TD5** (.swf) running under [Ruffle](https://ruffle.rs/) + [Playwright](https://playwright.dev/python/).
+A benchmark for evaluating LLM agents by having them play **Bloons Tower Defense 5**.
 
-## What it does
+The agent sees screenshots of the game, reads cash/lives/round via OCR, and uses tools to place towers, upgrade them, and start rounds. The score is simply: how many rounds can it survive?
 
-- Runs BTD5 in Ruffle Web inside Chromium, controlled entirely via Playwright
-- Portable save system: export/import game state as ~1KB JSON (no 107MB profile copies)
-- Blocks NinjaKiwi cloud sync to prevent interference with automation
-- Deferred game loading for pre-populating saves before the Flash VM starts
-- Coordinate-based menu navigation (placeholder coords, calibrate from screenshots)
-- Screenshot capture and JSONL trace logging for every action
+Everything runs locally — [Ruffle](https://ruffle.rs/) emulates Flash, [Playwright](https://playwright.dev/python/) drives Chromium, and the agent talks to [OpenRouter](https://openrouter.ai/) for LLM inference.
 
-## Layout
-
-```
-harness/
-  env/         config, web environment, save data, network blocking, menu nav
-  runtime/     local HTTP server, Ruffle Web vendor, wrapper HTML
-  trace/       JSONL trace logger
-scripts/       CLI tools for smoke tests, save export/import, ready-state pipeline
-game/          place btd5.swf here (not distributed)
-saves/         exported save JSON files
-```
-
-## Quick start
+## Setup
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -31,47 +14,91 @@ pip install -r requirements.txt
 python -m playwright install chromium
 ```
 
-Place your BTD5 SWF at `game/btd5.swf`, then:
+Place your BTD5 SWF at `game/btd5.swf` (not distributed).
 
-```bash
-# Smoke test
-python scripts/web_smoke.py
-
-# Manual play with persistent profile (for unlocking)
-python scripts/run_persistent_profile.py --profile unlocks
-
-# Start a clean new local save profile
-python scripts/run_persistent_profile.py --profile my_save --fresh-start
-
-# Export saves from profile
-python scripts/export_saves.py --profile unlocks
-
-# Decode save JSON into readable profile fields
-python scripts/decode_saves.py --input saves/my_save.json
-
-# Re-encode decoded JSON back into save JSON (lossless roundtrip)
-python scripts/encode_decoded_saves.py --input saves/save2.sol.decoded.json --output saves/hacked_save.json
-
-# If you manually edited save2.sol.decoded.json, apply those edits when encoding
-python scripts/encode_decoded_saves.py --input saves/save2.sol.decoded.json --output saves/hacked_save.json --apply-edits
-
-# Load that save into a new persistent profile
-python scripts/run_persistent_profile.py --profile hacked_save --fresh-start --seed-saves saves/hacked_save.json
-
-# Verify save injection in fresh browser
-python scripts/verify_saves.py --saves saves/unlocks.json
-
-# Full pipeline: saves + network block + menu nav
-python scripts/run_ready_state.py --saves saves/unlocks.json
+Set your API key in `.env`:
+```
+OPENROUTER_API_KEY=sk-or-...
 ```
 
-## How saves work
+## Run
 
-Ruffle stores Flash SharedObjects in `localStorage` as base64-encoded SOL bytes. The harness:
+```bash
+# Run an autonomous LLM agent
+python scripts/run_agent.py --model openai/gpt-4o
 
-1. Navigates to the wrapper with `?defer=1` (Ruffle player created, game not loaded)
-2. Injects save data into `localStorage` via `page.evaluate()`
-3. Calls `window.__BLOONSBENCH__.loadGame()` to start the game with pre-populated saves
+# With a specific map and difficulty
+python scripts/run_agent.py --model anthropic/claude-sonnet-4 --map monkey_lane --difficulty easy
 
-The local HTTP server uses a fixed port (8890) so `localStorage` persists across sessions on the same origin.
-Save injection is opt-in (`save_data_path` must be set explicitly).
+# Stop after N rounds
+python scripts/run_agent.py --model openai/gpt-4o --max-rounds 50
+
+# Inject pre-made saves (to skip tower unlocking)
+python scripts/run_agent.py --model openai/gpt-4o --saves saves/unlocks_maxed.json
+```
+
+### Interactive CLI
+
+Play manually or test the harness:
+
+```bash
+python scripts/run_mcp.py --cli
+```
+
+### MCP server
+
+For external agents that speak [MCP](https://modelcontextprotocol.io/) (JSON-RPC over stdio):
+
+```bash
+python scripts/run_mcp.py
+```
+
+## Agent tools
+
+| Tool | Description |
+|------|-------------|
+| `observe` | Screenshot the current game state |
+| `place_tower` | Place a tower at (x, y) on the map |
+| `upgrade_tower` | Upgrade a tower along path 1 or 2 |
+| `sell_tower` | Sell a tower for cash back |
+| `set_target` | Set targeting: first / last / close / strong |
+| `start_round` | Start the next round (fast-forward, 7s wait) |
+| `status` | Show placed towers, cash, lives, round |
+| `list_towers` | List all towers with costs and upgrade paths |
+| `click` | Raw click at (x, y) — escape hatch for stuck UI |
+| `send_key` | Press a key (e.g. Escape to cancel placement) |
+| `wait` | Wait N milliseconds |
+
+## Architecture
+
+```
+harness/
+  env/         Game environment, config, menu navigation, save injection
+  runtime/     Local HTTP server, Ruffle vendor, wrapper HTML
+  perception/  OCR for reading cash/lives/round from screenshots
+  trace/       JSONL action logging
+scripts/
+  run_agent.py   Autonomous LLM agent (OpenRouter)
+  run_mcp.py     MCP server or interactive CLI
+game/            Place btd5.swf here (not distributed)
+saves/           Pre-made save files for tower unlocks
+```
+
+## How it works
+
+1. A local HTTP server (port 8890) serves the Ruffle wrapper + SWF
+2. Playwright launches Chromium, navigates to the game, and auto-clicks through menus to round 1
+3. The agent loop: screenshot → OCR for game state → LLM decides actions → execute tools → repeat
+4. Between rounds, the agent places/upgrades towers; then calls `start_round` to begin
+5. OCR polls for the GO button to detect round completion, and for GAME OVER to detect loss
+6. Context distillation kicks in when the conversation gets long, summarizing history to stay within token limits
+
+## Save injection
+
+BTD5 locks most towers behind progression. To benchmark with all towers available, inject a save file:
+
+```bash
+python scripts/run_agent.py --model openai/gpt-4o --saves saves/unlocks_maxed.json
+```
+
+Saves are base64-encoded SOL files written to `localStorage` before the Flash VM starts (via deferred Ruffle loading).
