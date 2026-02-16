@@ -56,10 +56,10 @@ MAX_IMAGE_SIDE = 960
 JPEG_QUALITY = 60
 MAX_DISTILL_CHARS = 1800
 GO_POLL_INTERVAL_MS = 2500
-GO_REGION = (914, 581, 998, 624)  # screenshot-absolute crop for "Go!" button
+GO_REGION = (914, 555, 998, 598)  # screenshot-absolute crop for "Go!" button (shifted ~26px up)
 OK_REGION = (674, 406, 775, 466)  # screenshot-absolute crop for "OK!" popup button
 OK_CLICK = (724, 436)  # screenshot-absolute center of popup button
-GAME_OVER_REGION = (353, 189, 645, 243)  # screenshot-absolute crop for "GAME OVER" title
+GAME_OVER_REGION = (353, 162, 645, 216)  # screenshot-absolute crop for "GAME OVER" title (shifted ~27px up)
 
 
 # ── .env loading ─────────────────────────────────────────────────

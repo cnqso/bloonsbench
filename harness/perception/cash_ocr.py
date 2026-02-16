@@ -44,7 +44,7 @@ class GameState:
 # Derived from screenshot-absolute coords minus container offset (~69, ~35).
 REGION_CASH  = (855, 30, 71, 19)   # screenshot (924,65)→(995,84)
 REGION_LIVES = (855, 58, 33, 19)   # screenshot (924,93)→(957,112)
-REGION_ROUND = (93, 697, 24, 18)   # screenshot (162,732)→(186,750)
+REGION_ROUND = (93, 697, 96, 18)   # screenshot (162,732)→(258,750) – wide enough for "10 of 65"
 
 # OK button detection region and click target (content-relative).
 # Screenshot coords (671,406)→(780,468) minus container offset (~69,35).
@@ -94,6 +94,30 @@ class GameStateReader:
             self._easy_reader = easyocr.Reader(["en"], gpu=self._easyocr_gpu, verbose=False)
         return self._easy_reader
 
+    def _ocr_round_easyocr(self, crop: "Image.Image") -> tuple[int | None, "Image.Image"]:
+        """OCR the round region which shows e.g. '10 of 65' — return just the first number."""
+        reader = self._get_easyocr_reader()
+        arr = np.array(crop)
+        results = reader.readtext(
+            arr,
+            detail=1,
+            paragraph=False,
+            allowlist="0123456789of ",
+        )
+        if not results:
+            logger.debug("EasyOCR [round] returned no text")
+            return None, crop
+
+        merged = " ".join(str(row[1]) for row in results if len(row) >= 2)
+        logger.debug("EasyOCR [round] raw merged: %r", merged)
+
+        # Extract first number (the current round) from "10 of 65"
+        m = re.search(r"(\d+)", merged)
+        if not m:
+            logger.debug("EasyOCR [round] no digits in merged text: %r", merged)
+            return None, crop
+        return int(m.group(1)), crop
+
     def _ocr_crop_easyocr(self, crop: "Image.Image", label: str) -> tuple[int | None, "Image.Image"]:
         reader = self._get_easyocr_reader()
         arr = np.array(crop)
@@ -135,6 +159,22 @@ class GameStateReader:
 
         return int(best_digits), crop
 
+    def _ocr_round_tesseract(self, crop: "Image.Image") -> tuple[int | None, "Image.Image"]:
+        """Tesseract path for round region — parse first number from 'N of M'."""
+        gray = crop.convert("L")
+        binary = gray.point(lambda p: 0 if p > 160 else 255)
+        scaled = binary.resize((binary.width * 4, binary.height * 4), Image.LANCZOS)
+        text = pytesseract.image_to_string(
+            scaled,
+            config="--psm 7",
+        )
+        logger.debug("Tesseract [round] raw text: %r", text)
+        m = re.search(r"(\d+)", text)
+        if not m:
+            logger.debug("Tesseract [round] no digits in text: %r", text)
+            return None, scaled
+        return int(m.group(1)), scaled
+
     def _ocr_crop_tesseract(self, crop: "Image.Image", label: str) -> tuple[int | None, "Image.Image"]:
         gray = crop.convert("L")
 
@@ -166,7 +206,12 @@ class GameStateReader:
 
         guess: int | None = None
         proc = crop
-        if self._resolved_backend == "easyocr":
+        if label == "round":
+            if self._resolved_backend == "easyocr":
+                guess, proc = self._ocr_round_easyocr(crop)
+            elif self._resolved_backend == "tesseract":
+                guess, proc = self._ocr_round_tesseract(crop)
+        elif self._resolved_backend == "easyocr":
             guess, proc = self._ocr_crop_easyocr(crop, label)
         elif self._resolved_backend == "tesseract":
             guess, proc = self._ocr_crop_tesseract(crop, label)

@@ -15,7 +15,7 @@ from harness.env.config import HarnessConfig
 from harness.env.network import block_nk_domains
 from harness.env.save_data import import_saves_from_file
 from harness.env.menu_nav import (
-    TOWERS, GO_BUTTON, NavCoord,
+    TOWERS, GO_BUTTON, DESELECT_SPOT, NavCoord,
     navigate_to_round, place_tower, validate_placement, next_upgrade,
     select_tower_at, click_upgrade, click_sell, click_target, deselect,
     _get_container_box, _click,
@@ -259,6 +259,7 @@ class BloonsWebEnv:
         abs_x = box["x"] + x
         abs_y = box["y"] + y
         self.logger.log("click", x=x, y=y, abs_x=abs_x, abs_y=abs_y)
+        self.page.evaluate(f"window.__BLOONSBENCH__?.showDot({abs_x}, {abs_y})")
         self.page.mouse.click(abs_x, abs_y)
         self._update_state()
 
@@ -281,6 +282,10 @@ class BloonsWebEnv:
                 f"Cannot afford {tower_name} (${tower_def.cost}), current cash: ${cash}. "
                 "Use 'status' to check cash, or sell a tower first."
             )
+        # Fresh OCR to get authoritative cash before placement
+        self._update_state()
+        cash_before = self._last_game_state.cash
+
         tid = self._next_tower_id
         self._next_tower_id += 1
         self.logger.log("place_tower", tower=tower_name, x=x, y=y, tower_id=tid)
@@ -289,6 +294,25 @@ class BloonsWebEnv:
             id=tid, name=tower_name, x=x, y=y, upgrades=[0, 0],
         )
         self._update_state()
+        cash_after = self._last_game_state.cash
+
+        if cash_before == cash_after:
+            # Cash didn't change at all — placement almost certainly failed.
+            # (Both None, or both the same number.)
+            del self._placed_towers[tid]
+            self._next_tower_id -= 1
+            # Cancel any dangling placement cursor
+            box = _get_container_box(self.page)
+            _click(self.page, DESELECT_SPOT, box)
+            self.page.keyboard.press("Escape")
+            self.page.wait_for_timeout(300)
+            self.logger.log("place_tower_failed", tower=tower_name, x=x, y=y,
+                            cash_before=cash_before, cash_after=cash_after)
+            raise ValueError(
+                f"Placement of {tower_name} at ({x}, {y}) appears to have failed "
+                f"(cash unchanged: {cash_before} → {cash_after}). "
+                "The spot may be invalid. Try different coordinates."
+            )
         return tid
 
     def upgrade_tower(self, tower_id: int, path: int) -> None:
@@ -312,15 +336,33 @@ class BloonsWebEnv:
                 f"Cannot afford {nxt.name} (${nxt.cost}), current cash: ${cash}. "
                 "Use 'status' to check cash, or sell a tower first."
             )
+        # Fresh OCR to get authoritative cash before upgrade
+        self._update_state()
+        cash_before = self._last_game_state.cash
+
         self.logger.log("upgrade_tower", tower_id=tower_id, path=path,
                         name=tower.name, before=list(tower.upgrades))
         select_tower_at(self.page, tower.x, tower.y)
         click_upgrade(self.page, path)
         tower.upgrades[path - 1] += 1
         deselect(self.page)
+        self._update_state()
+        cash_after = self._last_game_state.cash
+
+        if cash_before == cash_after:
+            # Cash didn't change at all — upgrade almost certainly failed.
+            tower.upgrades[path - 1] -= 1
+            self.page.keyboard.press("Escape")
+            self.page.wait_for_timeout(300)
+            self.logger.log("upgrade_failed", tower_id=tower_id, path=path,
+                            cash_before=cash_before, cash_after=cash_after)
+            raise ValueError(
+                f"Upgrade of tower #{tower_id} ({tower.name}) path {path} appears to have failed "
+                f"(cash unchanged: {cash_before} → {cash_after}). "
+                "The upgrade may not be available or affordable."
+            )
         self.logger.log("upgrade_complete", tower_id=tower_id,
                         after=list(tower.upgrades))
-        self._update_state()
 
     def sell_tower(self, tower_id: int) -> None:
         """Sell a placed tower."""
