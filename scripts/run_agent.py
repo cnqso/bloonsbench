@@ -47,6 +47,7 @@ except ImportError:
 from harness.env.config import HarnessConfig
 from harness.env.web_env import BloonsWebEnv
 from harness.mcp_server import INSTRUCTIONS, TOOL_DEFS, _format_tower_list, _format_status
+from scripts.export_run import export_run
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MAX_ACTIONS_PER_TICK = 25  # safety cap per observation cycle
@@ -54,7 +55,6 @@ DISTILL_THRESHOLD = 80  # trigger distillation when messages exceed this
 KEEP_IMAGES = 1  # only keep the most recent screenshot
 MAX_IMAGE_SIDE = 960
 JPEG_QUALITY = 60
-MAX_DISTILL_CHARS = 1800
 GO_POLL_INTERVAL_MS = 2500
 GO_REGION = (914, 555, 998, 598)  # screenshot-absolute crop for "Go!" button (shifted ~26px up)
 OK_REGION = (674, 406, 775, 466)  # screenshot-absolute crop for "OK!" popup button
@@ -560,8 +560,6 @@ def distill_context(messages, api_key, model, reasoning_effort="low", error_dump
         summary = data["choices"][0]["message"].get("content", "")
         if not summary:
             raise RuntimeError("Empty distillation response")
-        if len(summary) > MAX_DISTILL_CHARS:
-            summary = summary[:MAX_DISTILL_CHARS] + "\n...[trimmed]..."
         log_stderr(f"Distillation complete ({len(summary)} chars):\n{summary}")
     except Exception as e:
         log_stderr(f"Distillation failed: {e}. Falling back to hard trim.")
@@ -591,6 +589,7 @@ def log_stderr(msg):
 
 def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low", error_dump_dir: Path | None = None):
     tools = mcp_to_openai_tools()
+    start_time = time.time()
 
     system_prompt = (
         INSTRUCTIONS
@@ -614,6 +613,7 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
     rounds_started = 0
     tick = 0
     idle_ticks = 0  # ticks where model returned no tool calls
+    game_over = False
 
     log_file = open(log_path, "a") if log_path else None
 
@@ -765,6 +765,7 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
                 round_completed = _wait_for_go_button(env, env.run_dir, rounds_started)
                 if not round_completed:
                     log_stderr("Detected GAME OVER while waiting for round completion. Stopping agent run.")
+                    game_over = True
                     break
                 tracked_round += 1
 
@@ -788,17 +789,58 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
 
     except KeyboardInterrupt:
         log_stderr("Stopped by user.")
+        stop_reason = "user_interrupt"
     except Exception as e:
         log_stderr(f"Fatal error: {e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
+        stop_reason = f"error: {e}"
+    else:
+        stop_reason = "game_over" if game_over else "max_rounds"
     finally:
+        elapsed_s = time.time() - start_time
         log_stderr(
             f"\nDone: {tick} ticks, {rounds_started} rounds started,"
             f" {sum(total_tokens.values())} tokens used"
         )
         if log_file:
             log_file.close()
+
+        # Write results summary
+        placed = env.get_placed_towers()
+        towers_data = [
+            {"id": tid, "name": t.name, "x": t.x, "y": t.y,
+             "upgrades": t.upgrades, "target": t.target}
+            for tid, t in sorted(placed.items())
+        ]
+        results = {
+            "model": model,
+            "round_reached": tracked_round,
+            "rounds_started": rounds_started,
+            "ticks": tick,
+            "elapsed_s": round(elapsed_s, 1),
+            "total_messages": len(messages),
+            "tokens_prompt": total_tokens["prompt"],
+            "tokens_completion": total_tokens["completion"],
+            "tokens_total": total_tokens["prompt"] + total_tokens["completion"],
+            "stop_reason": stop_reason,
+            "timestamp": datetime.now().isoformat(),
+            "towers": towers_data,
+        }
+        if env.run_dir:
+            results_path = env.run_dir / "results.json"
+            results_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+            log_stderr(f"Results saved: {results_path}")
+
+            # Auto-export submission for leaderboard
+            try:
+                sub_path = export_run(env.run_dir)
+                if sub_path:
+                    log_stderr(f"Submission exported: {sub_path}")
+            except Exception as e:
+                log_stderr(f"Auto-export failed (non-fatal): {e}")
+
+        log_stderr(json.dumps(results, indent=2))
 
 
 # ── Entry point ──────────────────────────────────────────────────

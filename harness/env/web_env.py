@@ -259,7 +259,6 @@ class BloonsWebEnv:
         abs_x = box["x"] + x
         abs_y = box["y"] + y
         self.logger.log("click", x=x, y=y, abs_x=abs_x, abs_y=abs_y)
-        self.page.evaluate(f"window.__BLOONSBENCH__?.showDot({abs_x}, {abs_y})")
         self.page.mouse.click(abs_x, abs_y)
         self._update_state()
 

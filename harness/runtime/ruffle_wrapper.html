@@ -45,40 +45,6 @@
       if (!defer) {
         window.__BLOONSBENCH__.loadGame();
       }
-
-      /* ── Debug: click coordinate overlay ─────────────────────── */
-      const container = document.getElementById('container');
-      const box = container.getBoundingClientRect();
-
-      function showDot(pageX, pageY) {
-        const cx = pageX - box.left;
-        const cy = pageY - box.top;
-        // Red dot
-        const dot = document.createElement('div');
-        Object.assign(dot.style, {
-          position: 'fixed', left: (pageX - 4) + 'px', top: (pageY - 4) + 'px',
-          width: '8px', height: '8px', borderRadius: '50%',
-          background: 'red', pointerEvents: 'none', zIndex: '99999',
-        });
-        document.body.appendChild(dot);
-        // Coordinate label
-        const label = document.createElement('div');
-        label.textContent = `(${Math.round(cx)}, ${Math.round(cy)})`;
-        Object.assign(label.style, {
-          position: 'fixed', left: (pageX + 10) + 'px', top: (pageY - 8) + 'px',
-          color: 'red', fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold',
-          pointerEvents: 'none', zIndex: '99999', textShadow: '0 0 3px #000',
-        });
-        document.body.appendChild(label);
-        setTimeout(() => { dot.remove(); label.remove(); }, 3000);
-        console.log(`[click] content-relative: (${Math.round(cx)}, ${Math.round(cy)})  page: (${Math.round(pageX)}, ${Math.round(pageY)})`);
-      }
-
-      // Expose for programmatic calls
-      window.__BLOONSBENCH__.showDot = showDot;
-
-      // Also capture user clicks on the container
-      container.addEventListener('click', (e) => showDot(e.pageX, e.pageY));
     </script>
   </body>
 </html>

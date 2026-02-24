@@ -23,5 +23,9 @@ saves/*.json
 # Environment
 *.env
 
-# Editor
+# Caches
+.pycache_local/
+
+
+# Tbh
 .claude/
