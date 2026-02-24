@@ -13,6 +13,7 @@ Everything runs locally — [Ruffle](https://ruffle.rs/) emulates Flash, [Playwr
 |-------|------|-----------|-----------|------------|------------|
 | openai/gpt-5-mini | 3 | 65 | 49.3 | 4 | 2.8M |
 | anthropic/claude-sonnet-4.6 | 1 | 59 | 59.0 | 13 | 2.5M |
+| openai/gpt-5-nano | 2 | 40 | 25.5 | 3 | 541K |
 
 ### Best Runs
 
@@ -21,6 +22,9 @@ No tower data available.
 
 **anthropic/claude-sonnet-4.6 — Round 59**
 Towers: #1 dart_monkey (420.0,145.0) [2/3], #2 dart_monkey (585.0,145.0) [2/3], #3 dart_monkey (150.0,320.0) [2/3], #4 dart_monkey (715.0,240.0) [2/3], #5 dart_monkey (280.0,350.0) [2/3], #6 bomb_tower (500.0,430.0) [3/2], #7 ninja_monkey (350.0,145.0) [4/2], #8 tack_shooter (260.0,235.0) [4/2], #9 bomb_tower (480.0,235.0) [2/4], #10 sniper_monkey (400.0,350.0) [2/2], #11 ice_tower (470.0,145.0) [2/4], #12 ninja_monkey (530.0,145.0) [4/2], #13 super_monkey (100.0,430.0) [2/2]
+
+**openai/gpt-5-nano — Round 40**
+Towers: #1 dart_monkey (150.0,320.0) [2/3], #3 dart_monkey (210.0,235.0) [2/3], #4 spike_factory (260.0,150.0) [3/2], #5 dart_monkey (280.0,350.0) [3/2], #6 dart_monkey (430.0,260.0) [4/2]
 
 ### Submit Your Results
 
