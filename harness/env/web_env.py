@@ -259,6 +259,7 @@ class BloonsWebEnv:
         abs_x = box["x"] + x
         abs_y = box["y"] + y
         self.logger.log("click", x=x, y=y, abs_x=abs_x, abs_y=abs_y)
+        self.page.evaluate(f"window.__BLOONSBENCH__?.showDot({abs_x}, {abs_y})")
         self.page.mouse.click(abs_x, abs_y)
         self._update_state()
 
@@ -275,15 +276,17 @@ class BloonsWebEnv:
         if not ok:
             raise ValueError(reason)
         tower_def = TOWERS[tower_name]
-        cash = self.read_cash()
-        if cash is not None and cash < tower_def.cost:
-            raise ValueError(
-                f"Cannot afford {tower_name} (${tower_def.cost}), current cash: ${cash}. "
-                "Use 'status' to check cash, or sell a tower first."
-            )
-        # Fresh OCR to get authoritative cash before placement
+
+        # Fresh OCR to get authoritative cash before attempting placement
         self._update_state()
         cash_before = self._last_game_state.cash
+
+        # Affordability check using fresh cash
+        if cash_before is not None and cash_before < tower_def.cost:
+            raise ValueError(
+                f"Cannot afford {tower_name} (costs ${tower_def.cost}), current cash: ${cash_before}. "
+                "Use 'status' to check cash, or sell a tower first."
+            )
 
         tid = self._next_tower_id
         self._next_tower_id += 1
@@ -307,10 +310,18 @@ class BloonsWebEnv:
             self.page.wait_for_timeout(300)
             self.logger.log("place_tower_failed", tower=tower_name, x=x, y=y,
                             cash_before=cash_before, cash_after=cash_after)
+
+            # More informative error message
+            reasons = []
+            if cash_before is not None and cash_before < tower_def.cost:
+                reasons.append(f"insufficient cash (${cash_before} < ${tower_def.cost})")
+            reasons.append("invalid coordinates")
+            reasons.append("tower costs may be inaccurate for this difficulty")
+
             raise ValueError(
-                f"Placement of {tower_name} at ({x}, {y}) appears to have failed "
+                f"Placement of {tower_name} at ({x}, {y}) failed "
                 f"(cash unchanged: {cash_before} → {cash_after}). "
-                "The spot may be invalid. Try different coordinates."
+                f"Possible causes: {', '.join(reasons)}."
             )
         return tid
 

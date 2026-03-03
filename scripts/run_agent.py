@@ -6,7 +6,7 @@ Uses OpenRouter's OpenAI-compatible API so you can swap models easily.
 
 Usage:
     python scripts/run_agent.py --model anthropic/claude-sonnet-4
-    python scripts/run_agent.py --model openai/gpt-4o --max-rounds 50
+    python scripts/run_agent.py --model openai/gpt-4o
 
 Requires OPENROUTER_API_KEY in .env or environment.
 Model must support vision + tool/function calling.
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import deque
 import io
 import json
 import os
@@ -50,16 +51,19 @@ from harness.mcp_server import INSTRUCTIONS, TOOL_DEFS, _format_tower_list, _for
 from scripts.export_run import export_run
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MAX_ACTIONS_PER_TICK = 25  # safety cap per observation cycle
-DISTILL_THRESHOLD = 80  # trigger distillation when messages exceed this
+MAX_ACTIONS_PER_CYCLE = 25  # safety cap per observation cycle
+DISTILL_TOKEN_THRESHOLD = 240_000  # trigger distillation when context exceeds this many tokens
+DISTILL_CHECK_INTERVAL_S = 10  # check for distillation need every N seconds
 KEEP_IMAGES = 1  # only keep the most recent screenshot
 MAX_IMAGE_SIDE = 960
 JPEG_QUALITY = 60
-GO_POLL_INTERVAL_MS = 2500
+GO_POLL_INTERVAL_MS = int(os.getenv("GO_POLL_INTERVAL_MS", "750"))
 GO_REGION = (914, 555, 998, 598)  # screenshot-absolute crop for "Go!" button (shifted ~26px up)
 OK_REGION = (674, 406, 775, 466)  # screenshot-absolute crop for "OK!" popup button
 OK_CLICK = (724, 436)  # screenshot-absolute center of popup button
 GAME_OVER_REGION = (353, 162, 645, 216)  # screenshot-absolute crop for "GAME OVER" title (shifted ~27px up)
+STREAM_MODE = os.getenv("AGENT_STREAM_MODE", "thinking").strip().lower()  # thinking|content|both
+CYCLE_INTERVAL_S = 60  # one planning cycle every minute
 
 
 # ── .env loading ─────────────────────────────────────────────────
@@ -77,19 +81,55 @@ def load_dotenv():
 
 # ── Tool format conversion ───────────────────────────────────────
 
-def mcp_to_openai_tools():
-    """Convert our MCP TOOL_DEFS to OpenAI function-calling format."""
-    return [
-        {
+def _sanitize_schema_for_google(schema: dict) -> dict:
+    """Sanitize JSON schema for Google AI Studio compatibility.
+
+    Google's schema validator is stricter than OpenAI's:
+    - Doesn't handle 'enum' inside properties well
+    - May not support all JSON Schema features
+    """
+    import copy
+    schema = copy.deepcopy(schema)
+
+    # Remove 'required' if it's an empty list (some providers reject this)
+    if "required" in schema and not schema["required"]:
+        del schema["required"]
+
+    # Remove 'enum' from properties and move to description
+    if "properties" in schema:
+        for prop_name, prop_def in schema["properties"].items():
+            if "enum" in prop_def:
+                enum_vals = prop_def.pop("enum")
+                desc = prop_def.get("description", "")
+                if desc and not desc.endswith("."):
+                    desc += "."
+                prop_def["description"] = f"{desc} Must be one of: {', '.join(map(str, enum_vals))}".strip()
+
+    return schema
+
+def mcp_to_openai_tools(model: str = ""):
+    """Convert our MCP TOOL_DEFS to OpenAI function-calling format.
+
+    Args:
+        model: Model identifier (e.g. 'google/gemini-...') to apply provider-specific fixes
+    """
+    is_google = "google" in model.lower() or "gemini" in model.lower()
+
+    tools = []
+    for d in TOOL_DEFS:
+        schema = d["inputSchema"]
+        if is_google:
+            schema = _sanitize_schema_for_google(schema)
+
+        tools.append({
             "type": "function",
             "function": {
                 "name": d["name"],
                 "description": d["description"],
-                "parameters": d["inputSchema"],
+                "parameters": schema,
             },
-        }
-        for d in TOOL_DEFS
-    ]
+        })
+    return tools
 
 
 # ── Tool execution ───────────────────────────────────────────────
@@ -319,6 +359,7 @@ def _wait_for_go_button(env, run_dir: Path, round_started_count: int) -> bool:
             return True
 
         poll_idx += 1
+        # Poll quickly so round-complete detection doesn't lag.
         env.page.wait_for_timeout(GO_POLL_INTERVAL_MS)
 
 
@@ -362,22 +403,245 @@ def _write_failed_request_dump(
         dump_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         out = dump_dir / f"openrouter_error_{ts}.json"
+
+        # Truncate response_body if it's huge (prevents infinite loops or huge files)
+        MAX_RESPONSE_BODY_SIZE = 50000  # 50KB should be plenty for error messages
+        if response_body and len(response_body) > MAX_RESPONSE_BODY_SIZE:
+            response_body = (
+                response_body[:MAX_RESPONSE_BODY_SIZE]
+                + f"\n\n... [TRUNCATED: response was {len(response_body)} bytes]"
+            )
+
+        # Strip request payload images to avoid giant dumps
+        safe_payload = payload.copy()
+        if "messages" in safe_payload:
+            safe_messages = []
+            for msg in safe_payload["messages"]:
+                if isinstance(msg.get("content"), list):
+                    msg = msg.copy()
+                    msg["content"] = [
+                        c if c.get("type") != "image_url" else {"type": "text", "text": "[image]"}
+                        for c in msg["content"]
+                    ]
+                safe_messages.append(msg)
+            safe_payload["messages"] = safe_messages
+
         out.write_text(
             json.dumps(
                 {
                     "error": error,
                     "response_status": response_status,
                     "response_body": response_body,
-                    "request_payload": payload,
+                    "request_payload": safe_payload,
                 },
                 indent=2,
             ),
             encoding="utf-8",
         )
         return out
-    except Exception:
+    except Exception as e:
+        # If dump writing fails, log to stderr but don't crash
+        try:
+            log_stderr(f"Warning: Failed to write error dump: {e}")
+        except Exception:
+            pass
         return None
 
+
+def _iter_sse_data(resp):
+    """Yield complete SSE data payloads, including multi-line data events."""
+    data_lines = []
+    for raw_line in resp.iter_lines(chunk_size=1, decode_unicode=True):
+        if raw_line is None:
+            continue
+        if isinstance(raw_line, bytes):
+            raw_line = raw_line.decode("utf-8", errors="replace")
+        line = raw_line.rstrip("\r")
+        if not line:
+            if data_lines:
+                yield "\n".join(data_lines)
+                data_lines = []
+            continue
+        if line.startswith("data:"):
+            data = line[5:]
+            if data.startswith(" "):
+                data = data[1:]
+            data_lines.append(data)
+    if data_lines:
+        yield "\n".join(data_lines)
+
+
+def _extract_text_fragments(value):
+    """Flatten provider-specific text containers into plain string fragments."""
+    fragments = []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        for item in value:
+            fragments.extend(_extract_text_fragments(item))
+        return fragments
+    if isinstance(value, dict):
+        # Most providers emit text here.
+        text = value.get("text")
+        if isinstance(text, str):
+            fragments.append(text)
+        # Some providers wrap text blocks under these keys.
+        for key in ("content", "summary", "output"):
+            if key in value:
+                fragments.extend(_extract_text_fragments(value[key]))
+        return fragments
+    return fragments
+
+
+def _merge_tool_call_delta(accumulated_tool_calls, tc_delta):
+    """Merge a single streamed tool-call delta into the accumulated structure."""
+    idx = tc_delta.get("index", 0)
+    if not isinstance(idx, int) or idx < 0:
+        idx = 0
+    while len(accumulated_tool_calls) <= idx:
+        accumulated_tool_calls.append({
+            "id": None,
+            "type": "function",
+            "function": {"name": "", "arguments": ""}
+        })
+
+    tc = accumulated_tool_calls[idx]
+    if "id" in tc_delta and tc_delta["id"]:
+        tc["id"] = tc_delta["id"]
+    if tc_delta.get("type"):
+        tc["type"] = tc_delta["type"]
+
+    fn_delta = tc_delta.get("function")
+    if isinstance(fn_delta, dict):
+        if isinstance(fn_delta.get("name"), str):
+            tc["function"]["name"] += fn_delta["name"]
+        if isinstance(fn_delta.get("arguments"), str):
+            tc["function"]["arguments"] += fn_delta["arguments"]
+
+
+def _parse_streaming_response(resp):
+    """Parse OpenRouter SSE streaming response and reconstruct OpenAI-style output.
+
+    Streams both assistant content and model reasoning/thinking text to stderr.
+    """
+    accumulated_content = ""
+    accumulated_reasoning = ""
+    accumulated_reasoning_details = []
+    accumulated_tool_calls = []
+    finish_reason = None
+    usage = {}
+    printed_any = False
+    seen_reasoning = False
+    deferred_content_fragments = []
+    recent_fragments = deque(maxlen=8)
+
+    def stream_fragment(fragment):
+        nonlocal printed_any
+        if not fragment:
+            return
+        normalized = fragment.strip()
+        if len(normalized) >= 32 and normalized in recent_fragments:
+            return
+        if not printed_any:
+            sys.stderr.write("[Agent] ")
+            printed_any = True
+        sys.stderr.write(fragment)
+        sys.stderr.flush()
+        if len(normalized) >= 32:
+            recent_fragments.append(normalized)
+
+    for data_str in _iter_sse_data(resp):
+        if data_str == "[DONE]":
+            break
+
+        try:
+            chunk = json.loads(data_str)
+        except json.JSONDecodeError:
+            continue
+
+        if "error" in chunk:
+            err = chunk["error"]
+            if isinstance(err, dict):
+                msg = err.get("message") or json.dumps(err)
+            else:
+                msg = str(err)
+            raise RuntimeError(f"Stream error: {msg}")
+
+        if "usage" in chunk and isinstance(chunk["usage"], dict):
+            usage = chunk["usage"]
+
+        for choice in chunk.get("choices", []):
+            delta = choice.get("delta", {})
+            if not isinstance(delta, dict):
+                continue
+
+            # Stream reasoning/thinking first, then normal assistant content.
+            reasoning_fragments = []
+            if "reasoning" in delta:
+                reasoning_fragments.extend(_extract_text_fragments(delta["reasoning"]))
+            if "reasoning_details" in delta and isinstance(delta["reasoning_details"], list):
+                accumulated_reasoning_details.extend(delta["reasoning_details"])
+                for detail in delta["reasoning_details"]:
+                    if isinstance(detail, dict) and detail.get("type") == "reasoning.encrypted":
+                        continue
+                    reasoning_fragments.extend(_extract_text_fragments(detail))
+            if "thinking" in delta:
+                reasoning_fragments.extend(_extract_text_fragments(delta["thinking"]))
+
+            for fragment in reasoning_fragments:
+                seen_reasoning = True
+                stream_fragment(fragment)
+                accumulated_reasoning += fragment
+
+            content_fragments = _extract_text_fragments(delta.get("content"))
+            for fragment in content_fragments:
+                accumulated_content += fragment
+                if STREAM_MODE == "both":
+                    stream_fragment(fragment)
+                elif STREAM_MODE == "content":
+                    stream_fragment(fragment)
+                else:
+                    # In thinking mode, only surface content if reasoning is absent.
+                    if not seen_reasoning:
+                        deferred_content_fragments.append(fragment)
+
+            # Accumulate tool calls.
+            if isinstance(delta.get("tool_calls"), list):
+                for tc_delta in delta["tool_calls"]:
+                    if isinstance(tc_delta, dict):
+                        _merge_tool_call_delta(accumulated_tool_calls, tc_delta)
+
+            if "finish_reason" in choice and choice["finish_reason"]:
+                finish_reason = choice["finish_reason"]
+
+    if STREAM_MODE == "thinking" and not seen_reasoning:
+        for fragment in deferred_content_fragments:
+            stream_fragment(fragment)
+
+    if printed_any:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+    message = {}
+    if accumulated_content:
+        message["content"] = accumulated_content
+    encrypted_reasoning = [
+        d
+        for d in accumulated_reasoning_details
+        if isinstance(d, dict) and d.get("type") == "reasoning.encrypted"
+    ]
+    if encrypted_reasoning:
+        message["reasoning_details"] = encrypted_reasoning
+    if accumulated_tool_calls:
+        message["tool_calls"] = accumulated_tool_calls
+
+    return {
+        "choices": [{
+            "message": message,
+            "finish_reason": finish_reason or "stop"
+        }],
+        "usage": usage
+    }
 
 def call_llm(
     api_key,
@@ -387,6 +651,8 @@ def call_llm(
     reasoning_effort="low",
     max_retries=6,
     error_dump_dir: Path | None = None,
+    stream=True,
+    tool_choice="auto",
 ):
     attempt = 0
     while True:
@@ -395,8 +661,15 @@ def call_llm(
             "messages": messages,
             "tools": tools,
             "temperature": 0.3,
-            "reasoning": {"effort": reasoning_effort},
+            "reasoning": {"effort": reasoning_effort, "exclude": False},
+            "stream": stream,
         }
+        if tools:
+            payload["tool_choice"] = tool_choice
+        if stream:
+            payload["stream_options"] = {"include_usage": True}
+        response_status = None
+        response_body = None
         try:
             resp = _session.post(
                 OPENROUTER_URL,
@@ -406,9 +679,13 @@ def call_llm(
                 },
                 json=payload,
                 timeout=180,
+                stream=stream,
             )
+            response_status = resp.status_code
+
             if resp.status_code >= 400:
-                detail = resp.text
+                response_body = resp.text
+                detail = response_body
                 try:
                     body = resp.json()
                     if isinstance(body, dict):
@@ -419,9 +696,16 @@ def call_llm(
                 except Exception:
                     pass
                 raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
-            data = resp.json()
-            if "error" in data:
-                raise RuntimeError(data["error"].get("message", data["error"]))
+
+            # Handle streaming vs non-streaming response
+            if stream:
+                data = _parse_streaming_response(resp)
+            else:
+                response_body = resp.text
+                data = resp.json()
+                if "error" in data:
+                    raise RuntimeError(data["error"].get("message", data["error"]))
+
             return data
         except Exception as e:
             attempt += 1
@@ -429,19 +713,45 @@ def call_llm(
                 payload=payload,
                 error=str(e),
                 dump_dir=error_dump_dir,
+                response_status=response_status,
+                response_body=response_body,
             )
             if dump_path:
                 log_stderr(f"OpenRouter error request dump: {dump_path}")
+
+            # Classify error type for retry logic
             if _is_transient(e):
-                # Kill the dead connection pool and start fresh
+                # Network/SSL/timeout errors: retry forever
                 _session.close()
                 _session.mount("https://", HTTPAdapter(max_retries=_retry, pool_maxsize=1))
                 wait = min(2 ** attempt, 60)
                 log_stderr(f"Network error (attempt {attempt}, retrying forever): {e}. Waiting {wait}s...")
                 time.sleep(wait)
-            elif isinstance(e, RuntimeError) and "HTTP 4" in str(e) and "HTTP 429" not in str(e):
+            elif isinstance(e, RuntimeError) and "HTTP 429" in str(e):
+                # Rate limit: retry with exponential backoff
+                wait = min(2 ** attempt, 30)
+                log_stderr(f"Rate limit (attempt {attempt}/{max_retries}): {e}. Retrying in {wait}s...")
+                if attempt >= max_retries:
+                    raise
+                time.sleep(wait)
+            elif isinstance(e, RuntimeError) and "HTTP 400" in str(e):
+                # HTTP 400 from provider: retry a few times (provider may be flaky)
+                max_400_retries = 3
+                if attempt <= max_400_retries:
+                    wait = 5 + (attempt * 2)  # 5s, 7s, 9s
+                    log_stderr(f"Provider error HTTP 400 (attempt {attempt}/{max_400_retries}): {e}")
+                    log_stderr(f"  Model: {model}")
+                    log_stderr(f"  Retrying in {wait}s (provider may be temporarily unstable)...")
+                    time.sleep(wait)
+                else:
+                    log_stderr(f"Provider error HTTP 400 persisted after {max_400_retries} retries. Giving up.")
+                    raise
+            elif isinstance(e, RuntimeError) and "HTTP 4" in str(e):
+                # Other 4xx errors (401, 403, 404, etc.): don't retry
+                log_stderr(f"Client error {e} - not retrying")
                 raise
             elif attempt < max_retries:
+                # Other API errors: retry with exponential backoff
                 wait = min(2 ** attempt, 30)
                 log_stderr(f"API error (attempt {attempt}/{max_retries}): {e}. Retrying in {wait}s...")
                 time.sleep(wait)
@@ -508,13 +818,19 @@ RULES_REMINDER = """\
 """
 
 
-def distill_context(messages, api_key, model, reasoning_effort="low", error_dump_dir: Path | None = None):
-    """Replace old messages with an LLM-generated summary. Always preserves the system prompt."""
-    if len(messages) <= DISTILL_THRESHOLD:
+def distill_context(messages, token_count, api_key, model, reasoning_effort="low", error_dump_dir: Path | None = None):
+    """Replace old messages with an LLM-generated summary when context gets large.
+
+    Args:
+        token_count: Approximate token count of the current context
+
+    Returns the distilled messages if threshold exceeded, otherwise strips old images and returns original.
+    """
+    if token_count < DISTILL_TOKEN_THRESHOLD:
         strip_old_images(messages)
         return messages
 
-    log_stderr(f"Distilling context ({len(messages)} messages → summary)...")
+    log_stderr(f"Distilling context (~{token_count} tokens, {len(messages)} messages → summary)...")
 
     system = messages[0]
     # Keep a recent tail of only safe non-tool messages.
@@ -556,6 +872,7 @@ def distill_context(messages, api_key, model, reasoning_effort="low", error_dump
             reasoning_effort=reasoning_effort,
             max_retries=2,
             error_dump_dir=error_dump_dir,
+            stream=False,  # Don't stream distillation summaries
         )
         summary = data["choices"][0]["message"].get("content", "")
         if not summary:
@@ -585,10 +902,35 @@ def log_stderr(msg):
     sys.stderr.flush()
 
 
+def _prompt_continue_after_token_limit(tokens_total: int, token_limit: int) -> bool:
+    """Pause execution and ask the user whether to continue after hitting token limit."""
+    if not sys.stdin or not sys.stdin.isatty():
+        log_stderr(
+            f"Token limit reached ({tokens_total} > {token_limit}) in non-interactive mode; stopping."
+        )
+        return False
+
+    while True:
+        sys.stderr.write(
+            f"[{time.strftime('%H:%M:%S')}] Token limit reached "
+            f"({tokens_total} > {token_limit}). Continue run? [y/N]: "
+        )
+        sys.stderr.flush()
+        answer = sys.stdin.readline()
+        if not answer:
+            return False
+        choice = answer.strip().lower()
+        if choice in {"y", "yes"}:
+            return True
+        if choice in {"", "n", "no"}:
+            return False
+        log_stderr("Please answer 'y' or 'n'.")
+
+
 # ── Main agent loop ──────────────────────────────────────────────
 
-def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low", error_dump_dir: Path | None = None):
-    tools = mcp_to_openai_tools()
+def run_agent(env, api_key, model, log_path, reasoning_effort="low", error_dump_dir: Path | None = None):
+    tools = mcp_to_openai_tools(model=model)
     start_time = time.time()
 
     system_prompt = (
@@ -609,13 +951,26 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
 
     messages = [{"role": "system", "content": system_prompt}]
     total_tokens = {"prompt": 0, "completion": 0}
+    current_context_tokens = 0  # Track current conversation context size (not cumulative)
     tracked_round = 1
     rounds_started = 0
-    tick = 0
-    idle_ticks = 0  # ticks where model returned no tool calls
+    cycle_count = 0
+    idle_cycles = 0  # cycles where model returned no tool calls
     game_over = False
 
+    # Loop detection: track state to detect when we're stuck
+    last_state = None  # (round, cash, tower_count)
+    stuck_cycles = 0
+    MAX_STUCK_CYCLES = 5  # Stop if stuck in same state for this many cycles
+    TOKEN_LIMIT_STEP = 5_000_000  # Increase token budget in 5M steps when user continues
+    MAX_RESPONSE_TOKENS = 100_000  # Stop if a single response exceeds this
+    cycles_this_round = 0
+    MAX_CYCLES_PER_ROUND = 20  # Stop if we spend too many cycles on one round
+    token_limit = TOKEN_LIMIT_STEP
+
     log_file = open(log_path, "a") if log_path else None
+    stop_reason = "unknown"
+    last_distill_check = time.time()
 
     def log_action(entry):
         if log_file:
@@ -624,8 +979,9 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
             log_file.flush()
 
     try:
-        while max_rounds <= 0 or rounds_started < max_rounds:
-            tick += 1
+        while True:
+            cycle_started_at = time.monotonic()
+            cycle_count += 1
 
             # ── Observe ──
             screenshot_path = _observe_with_popup_guard(env, env.run_dir, "agent")
@@ -633,35 +989,90 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
             b64, mime = encode_image(str(screenshot_path))
 
             prompt_text = (
-                f"Tracked round (authoritative): {tracked_round}\n"
-                f"Current status:\n{status_text}\n\nDecide your next actions."
+                f"Round {tracked_round}\n\n"
+                f"{status_text}\n\n"
+                f"Make your move using tools. Call start_round when ready to begin the next round."
             )
-            if idle_ticks >= 3:
-                prompt_text += "\n\nPlease use the available tools to take action."
-                idle_ticks = 0
+            if idle_cycles >= 3:
+                prompt_text = (
+                    f"Round {tracked_round}\n\n"
+                    f"{status_text}\n\n"
+                    f"⚠️  ERROR: You did not use any tools.\n"
+                    f"You MUST call a tool now. DO NOT output text.\n"
+                    f"Example: start_round, place_tower, upgrade_tower, status"
+                )
+                idle_cycles = 0
 
             messages.append(make_image_message(b64, prompt_text, mime_type=mime))
 
-            # Parse game state from status for the tick header
+            # Parse game state from status for the cycle status line
             gs = env.read_game_state()
             cash_display = f"${gs.cash}" if gs.cash is not None else "?"
             lives_display = str(gs.lives) if gs.lives is not None else "?"
+            elapsed_minutes = int((time.time() - start_time) // 60)
 
             log_stderr(
-                f"{'=' * 50}\n"
-                f"[{time.strftime('%H:%M:%S')}] Tick {tick} | Round {tracked_round}"
+                f"Round {tracked_round}"
                 f" | Cash: {cash_display} | Lives: {lives_display}"
                 f" | Towers: {len(env.get_placed_towers())}"
-                f" | Tokens: {sum(total_tokens.values())}\n"
-                f"{'=' * 50}"
+                f" | Tokens: {sum(total_tokens.values())}"
+                f" | Elapsed: {elapsed_minutes}m"
             )
 
-            # ── Inner action loop ──
-            actions_this_tick = 0
-            did_act = False
-            round_started_this_tick = False
+            # ── Safety checks: detect loops and token limits ──
+            current_state = (tracked_round, gs.cash, len(env.get_placed_towers()))
+            if current_state == last_state:
+                stuck_cycles += 1
+                if stuck_cycles >= MAX_STUCK_CYCLES:
+                    log_stderr(
+                        f"Loop detected: stuck in same state for {stuck_cycles} cycles "
+                        f"(Round {tracked_round}, Cash {cash_display}, {len(env.get_placed_towers())} towers). "
+                        "Stopping to prevent infinite loop."
+                    )
+                    stop_reason = "loop_detected"
+                    break
+            else:
+                stuck_cycles = 0
+                last_state = current_state
 
-            while actions_this_tick < MAX_ACTIONS_PER_TICK:
+            tokens_total = sum(total_tokens.values())
+            if tokens_total > token_limit:
+                should_continue = _prompt_continue_after_token_limit(tokens_total, token_limit)
+                if should_continue:
+                    token_limit += TOKEN_LIMIT_STEP
+                    log_stderr(
+                        f"Continuing run. New token limit: {token_limit}. "
+                        "Attempting immediate context distillation to reduce prompt size."
+                    )
+                    messages = distill_context(
+                        messages,
+                        token_count=max(current_context_tokens, DISTILL_TOKEN_THRESHOLD + 1),
+                        api_key=api_key,
+                        model=model,
+                        reasoning_effort=reasoning_effort,
+                        error_dump_dir=error_dump_dir,
+                    )
+                else:
+                    log_stderr(f"Token limit exceeded ({tokens_total} > {token_limit}). Stopping.")
+                    stop_reason = "token_limit"
+                    break
+
+            cycles_this_round += 1
+            if cycles_this_round > MAX_CYCLES_PER_ROUND:
+                log_stderr(
+                    f"Spending too long on round {tracked_round} ({cycles_this_round} cycles). "
+                    "Possible infinite loop. Stopping."
+                )
+                stop_reason = "cycle_limit"
+                break
+
+            # ── Inner action loop ──
+            actions_this_cycle = 0
+            did_act = False
+            round_started_this_cycle = False
+            should_stop = False
+
+            while actions_this_cycle < MAX_ACTIONS_PER_CYCLE and not should_stop:
                 data = call_llm(
                     api_key,
                     model,
@@ -669,12 +1080,27 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
                     tools,
                     reasoning_effort=reasoning_effort,
                     error_dump_dir=error_dump_dir,
+                    tool_choice="required",
                 )
 
                 # Track usage
                 usage = data.get("usage", {})
-                total_tokens["prompt"] += usage.get("prompt_tokens", 0)
-                total_tokens["completion"] += usage.get("completion_tokens", 0)
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                total_tokens["prompt"] += prompt_tokens
+                total_tokens["completion"] += completion_tokens
+                current_context_tokens = prompt_tokens  # Current context size
+
+                # Check for runaway responses
+                response_tokens = prompt_tokens + completion_tokens
+                if response_tokens > MAX_RESPONSE_TOKENS:
+                    log_stderr(
+                        f"Single response exceeded token limit ({response_tokens} > {MAX_RESPONSE_TOKENS}). "
+                        "Model may be stuck in reasoning loop. Stopping."
+                    )
+                    stop_reason = "response_token_limit"
+                    should_stop = True
+                    break
 
                 choice = data["choices"][0]
                 msg = choice["message"]
@@ -683,18 +1109,29 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
                 assistant_msg = {"role": "assistant", "content": msg.get("content") or None}
                 if msg.get("tool_calls"):
                     assistant_msg["tool_calls"] = msg["tool_calls"]
+                if msg.get("reasoning_details"):
+                    assistant_msg["reasoning_details"] = msg["reasoning_details"]
+
+                # Don't keep large no-tool rambles in history.
+                if not msg.get("tool_calls") and assistant_msg.get("content"):
+                    if len(assistant_msg["content"]) > 240:
+                        assistant_msg["content"] = assistant_msg["content"][:240] + " …"
                 messages.append(assistant_msg)
 
-                if msg.get("content"):
-                    log_stderr(f"Agent: {msg['content'][:300]}")
+                # Content already streamed in real-time during call_llm
+                # No need to log again here
 
-                # No tool calls → end of tick
+                # No tool calls → end of cycle
                 if not msg.get("tool_calls"):
                     if not did_act:
-                        idle_ticks += 1
+                        idle_cycles += 1
+                    # Detect if model is outputting huge text dumps instead of tool calls
+                    content_len = len(msg.get("content") or "")
+                    if content_len > 1000 and not did_act:
+                        log_stderr(f"⚠️  Model output {content_len} chars without tool calls. Likely confused/looping.")
                     break
 
-                idle_ticks = 0
+                idle_cycles = 0
                 did_act = True
                 inject_screenshot = False
                 inject_path = None
@@ -710,7 +1147,7 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
                     # Strict pre-action guard: always clear popup state before every action.
                     if env.run_dir is None:
                         raise RuntimeError("run_dir missing before pre-action popup guard")
-                    _observe_with_popup_guard(env, env.run_dir, f"pre_action_t{tick:04d}_{actions_this_tick:03d}")
+                    _observe_with_popup_guard(env, env.run_dir, f"pre_action_c{cycle_count:04d}_{actions_this_cycle:03d}")
 
                     result_text, img_path = execute_tool(
                         env,
@@ -718,7 +1155,7 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
                         args,
                         screenshot_hook=lambda p, t: _dismiss_ok_popup_if_present(env, p, env.run_dir, t),
                     )
-                    actions_this_tick += 1
+                    actions_this_cycle += 1
 
                     log_stderr(f"  tool: {name}({json.dumps(args)}) → {result_text}")
 
@@ -729,7 +1166,7 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
                     })
 
                     log_action({
-                        "tick": tick,
+                        "cycle": cycle_count,
                         "round": tracked_round,
                         "tool": name,
                         "args": args,
@@ -738,16 +1175,16 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
 
                     if name == "start_round":
                         rounds_started += 1
-                        round_started_this_tick = True
+                        round_started_this_cycle = True
 
                     if img_path:
                         inject_screenshot = True
                         inject_path = img_path
 
-                    if round_started_this_tick:
+                    if round_started_this_cycle:
                         break
 
-                if round_started_this_tick:
+                if round_started_this_cycle:
                     break
 
                 # If model called observe, inject the image so it can see it
@@ -757,8 +1194,12 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
                         b64, "Here is the screenshot you requested. Continue.", mime_type=mime
                     ))
 
+            # Check if inner loop hit a stop condition
+            if should_stop:
+                break
+
             # On start_round, wait until Go button returns before next LLM turn.
-            if round_started_this_tick:
+            if round_started_this_cycle:
                 log_stderr("Round started by agent; waiting for GO button to return...")
                 if env.run_dir is None:
                     raise RuntimeError("run_dir missing while waiting for GO button")
@@ -768,24 +1209,37 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
                     game_over = True
                     break
                 tracked_round += 1
+                cycles_this_round = 0  # Reset counter for new round
 
-            # ── Distill context if needed ──
-            messages = distill_context(
-                messages,
-                api_key,
-                model,
-                reasoning_effort=reasoning_effort,
-                error_dump_dir=error_dump_dir,
-            )
+            # ── Distill context if needed (periodic check based on time + tokens) ──
+            now = time.time()
+            if now - last_distill_check >= DISTILL_CHECK_INTERVAL_S:
+                last_distill_check = now
+                # Use current context size (prompt tokens), not cumulative total
+                messages = distill_context(
+                    messages,
+                    token_count=current_context_tokens,
+                    api_key=api_key,
+                    model=model,
+                    reasoning_effort=reasoning_effort,
+                    error_dump_dir=error_dump_dir,
+                )
 
             log_action({
-                "tick": tick,
+                "cycle": cycle_count,
                 "round": tracked_round,
-                "event": "tick_end",
-                "actions": actions_this_tick,
+                "event": "cycle_end",
+                "actions": actions_this_cycle,
                 "message_count": len(messages),
                 "tokens_total": sum(total_tokens.values()),
             })
+
+            # Keep cadence stable for planning-only cycles.
+            # If we just started/completed a round, continue immediately.
+            if not round_started_this_cycle:
+                cycle_elapsed = time.monotonic() - cycle_started_at
+                if cycle_elapsed < CYCLE_INTERVAL_S:
+                    time.sleep(CYCLE_INTERVAL_S - cycle_elapsed)
 
     except KeyboardInterrupt:
         log_stderr("Stopped by user.")
@@ -796,11 +1250,16 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
         traceback.print_exc(file=sys.stderr)
         stop_reason = f"error: {e}"
     else:
-        stop_reason = "game_over" if game_over else "max_rounds"
+        # Don't clobber explicit stop reasons set inside the loop.
+        if stop_reason == "unknown":
+            if game_over:
+                stop_reason = "game_over"
+            else:
+                stop_reason = "completed"
     finally:
         elapsed_s = time.time() - start_time
         log_stderr(
-            f"\nDone: {tick} ticks, {rounds_started} rounds started,"
+            f"\nDone: {cycle_count} cycles, {rounds_started} rounds started,"
             f" {sum(total_tokens.values())} tokens used"
         )
         if log_file:
@@ -817,7 +1276,7 @@ def run_agent(env, api_key, model, log_path, max_rounds, reasoning_effort="low",
             "model": model,
             "round_reached": tracked_round,
             "rounds_started": rounds_started,
-            "ticks": tick,
+            "cycles": cycle_count,
             "elapsed_s": round(elapsed_s, 1),
             "total_messages": len(messages),
             "tokens_prompt": total_tokens["prompt"],
@@ -851,10 +1310,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  python scripts/run_agent.py --model anthropic/claude-sonnet-4\n"
-               "  python scripts/run_agent.py --model openai/gpt-4o --max-rounds 20\n",
+               "  python scripts/run_agent.py --model openai/gpt-4o\n",
     )
     parser.add_argument("--model", required=True, help="OpenRouter model ID")
-    parser.add_argument("--max-rounds", type=int, default=0, help="Stop after N rounds (0 = infinite)")
+    parser.add_argument("--max-rounds", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--swf", default="game/btd5.swf")
     parser.add_argument(
         "--profile",
@@ -871,6 +1330,8 @@ def main():
         help="Reasoning effort passed to the model (default: low)",
     )
     args = parser.parse_args()
+    if args.max_rounds is not None:
+        log_stderr("Warning: --max-rounds is deprecated and ignored. Runs are now unbounded.")
 
     load_dotenv()
     api_key = os.environ.get("OPENROUTER_API_KEY")
@@ -905,7 +1366,6 @@ def main():
             api_key,
             args.model,
             log_path,
-            args.max_rounds,
             reasoning_effort=args.reasoning,
             error_dump_dir=run_dir,
         )

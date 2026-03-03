@@ -1,0 +1,84 @@
+{
+  "model": "google/gemini-3-flash-preview",
+  "round_reached": 2,
+  "rounds_started": 1,
+  "ticks": 5,
+  "elapsed_s": 72.9,
+  "total_messages": 13,
+  "tokens_prompt": 30728,
+  "tokens_completion": 210,
+  "tokens_total": 30938,
+  "stop_reason": "user_interrupt",
+  "timestamp": "2026-02-24T11:11:38.966821",
+  "towers": [
+    {
+      "id": 1,
+      "name": "ninja_monkey",
+      "x": 280.0,
+      "y": 350.0,
+      "upgrades": [
+        0,
+        0
+      ],
+      "target": "first"
+    }
+  ],
+  "trace": [
+    {
+      "tick": 1,
+      "round": 1,
+      "tool": "place_tower",
+      "args": {
+        "x": 280,
+        "y": 350,
+        "tower": "ninja_monkey"
+      },
+      "result": "Placed ninja_monkey at (280, 350), tower_id=1",
+      "ts": 1771949432.579818
+    },
+    {
+      "tick": 1,
+      "round": 1,
+      "tool": "start_round",
+      "args": {},
+      "result": "Round started (fast-forward, waited 7s).",
+      "ts": 1771949443.578223
+    },
+    {
+      "tick": 1,
+      "round": 2,
+      "event": "tick_end",
+      "actions": 2,
+      "message_count": 6,
+      "tokens_total": 9800,
+      "ts": 1771949443.8024619
+    },
+    {
+      "tick": 2,
+      "round": 2,
+      "event": "tick_end",
+      "actions": 0,
+      "message_count": 8,
+      "tokens_total": 15656,
+      "ts": 1771949446.308819
+    },
+    {
+      "tick": 3,
+      "round": 2,
+      "event": "tick_end",
+      "actions": 0,
+      "message_count": 10,
+      "tokens_total": 22702,
+      "ts": 1771949448.921056
+    },
+    {
+      "tick": 4,
+      "round": 2,
+      "event": "tick_end",
+      "actions": 0,
+      "message_count": 12,
+      "tokens_total": 30938,
+      "ts": 1771949456.807592
+    }
+  ]
+}

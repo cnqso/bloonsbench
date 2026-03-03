@@ -3,6 +3,7 @@
 All coordinates are content-relative (960x720 area), calibrated via debug_nav.py.
 All prices are base costs (medium difficulty).
 NOTE: The "easy" difficulty coord actually selects medium in-game.
+WARNING: Tower prices may vary by difficulty/game version. Verify costs if affordability checks fail.
 """
 
 from __future__ import annotations
@@ -83,7 +84,7 @@ TOWERS = {
                _U("Blade Shooter", 680), _U("Blade Maelstrom", 2700)),
     ),
     "sniper_monkey": TowerDef(
-        "sniper_monkey", 1, NavCoord("sniper_monkey", _LX, _ROW_Y[1]), cost=350,
+        "sniper_monkey", 1, NavCoord("sniper_monkey", _LX, _ROW_Y[1]), cost=400,
         path1=(_U("Full Metal Jacket", 350), _U("Point Five Oh", 2200),
                _U("Deadly Precision", 4000), _U("Cripple MOAB", 12500)),
         path2=(_U("Faster Firing", 400), _U("Night Vision Goggles", 300),
@@ -97,7 +98,7 @@ TOWERS = {
                _U("Bionic Boomer", 1600), _U("Turbo Charge", 3000)),
     ),
     "ninja_monkey": TowerDef(
-        "ninja_monkey", 1, NavCoord("ninja_monkey", _LX, _ROW_Y[2]), cost=500,
+        "ninja_monkey", 1, NavCoord("ninja_monkey", _LX, _ROW_Y[2]), cost=600,
         path1=(_U("Ninja Discipline", 300), _U("Sharp Shurikens", 350),
                _U("Double Shot", 850), _U("Bloonjitsu", 2750)),
         path2=(_U("Seeking Shuriken", 250), _U("Distraction", 350),
@@ -111,35 +112,35 @@ TOWERS = {
                _U("MOAB Mauler", 900), _U("MOAB Assassin", 3200)),
     ),
     "ice_tower": TowerDef(
-        "ice_tower", 1, NavCoord("ice_tower", _LX, _ROW_Y[3]), cost=300,
+        "ice_tower", 1, NavCoord("ice_tower", _LX, _ROW_Y[3]), cost=380,
         path1=(_U("Enhanced Freeze", 225), _U("Snap Freeze", 400),
                _U("Arctic Wind", 6500), _U("Viral Frost", 6000)),
         path2=(_U("Permafrost", 100), _U("Deep Freeze", 350),
                _U("Ice Shards", 2000), _U("Absolute Zero", 2000)),
     ),
     "glue_gunner": TowerDef(
-        "glue_gunner", 1, NavCoord("glue_gunner", _RX, _ROW_Y[3]), cost=270,
+        "glue_gunner", 1, NavCoord("glue_gunner", _RX, _ROW_Y[3]), cost=300,
         path1=(_U("Glue Soak", 200), _U("Corrosive Glue", 300),
                _U("Bloon Dissolver", 3300), _U("Bloon Liquefier", 12500)),
         path2=(_U("Stickier Glue", 120), _U("Glue Splatter", 2200),
                _U("Glue Hose", 3250), _U("Glue Striker", 5500)),
     ),
     "monkey_buccaneer": TowerDef(
-        "monkey_buccaneer", 1, NavCoord("monkey_buccaneer", _LX, _ROW_Y[4]), cost=500,
+        "monkey_buccaneer", 1, NavCoord("monkey_buccaneer", _LX, _ROW_Y[4]), cost=600,
         path1=(_U("Faster Shooting", 400), _U("Longer Cannons", 180),
                _U("Destroyer", 2200), _U("Aircraft Carrier", 15000)),
         path2=(_U("Grape Shot", 500), _U("Crow's Nest", 250),
                _U("Cannon Ship", 1200), _U("Monkey Pirates", 4500)),
     ),
     "monkey_ace": TowerDef(
-        "monkey_ace", 1, NavCoord("monkey_ace", _RX, _ROW_Y[4]), cost=900,
+        "monkey_ace", 1, NavCoord("monkey_ace", _RX, _ROW_Y[4]), cost=950,
         path1=(_U("Rapid Fire", 700), _U("Sharper Darts", 500),
                _U("Neva-Miss Targeting", 2200), _U("Spectre", 18000)),
         path2=(_U("Pineapple Express", 200), _U("Spy Plane", 350),
                _U("Operation: Dart Storm", 3000), _U("Ground Zero", 14000)),
     ),
     "super_monkey": TowerDef(
-        "super_monkey", 1, NavCoord("super_monkey", _LX, _ROW_Y[5]), cost=3500,
+        "super_monkey", 1, NavCoord("super_monkey", _LX, _ROW_Y[5]), cost=4000,
         path1=(_U("Laser Blasts", 3500), _U("Plasma Blasts", 5000),
                _U("Sun God", 16500), _U("Temple of the Monkey God", 100000)),
         path2=(_U("Super Range", 1000), _U("Epic Range", 1500),
@@ -168,7 +169,7 @@ TOWERS = {
                _U("Monkey Bank", 4200), _U("Banana Investments Advisory", 5500)),
     ),
     "mortar_tower": TowerDef(
-        "mortar_tower", 2, NavCoord("mortar_tower", 860, 370), cost=750,
+        "mortar_tower", 2, NavCoord("mortar_tower", 860, 370), cost=800,
         path1=(_U("Increased Accuracy", 200), _U("Bigger Blast", 600),
                _U("Bloon Buster", 800), _U("The Big One", 10000)),
         path2=(_U("Rapid Reload", 250), _U("Burny Stuff", 500),
@@ -182,7 +183,7 @@ TOWERS = {
                _U("Hydra Rocket Pods", 7000), _U("Bloon Area Denial System", 20000)),
     ),
     "spike_factory": TowerDef(
-        "spike_factory", 2, NavCoord("spike_factory", 858, 427), cost=750,
+        "spike_factory", 2, NavCoord("spike_factory", 858, 427), cost=700,
         path1=(_U("Bigger Stacks", 700), _U("White Hot Spikes", 900),
                _U("Spiked Ball Factory", 2400), _U("Spiked Mines", 14000)),
         path2=(_U("Faster Production", 800), _U("Even Faster Production", 1250),
@@ -192,9 +193,9 @@ TOWERS = {
 }
 
 # ── Upgrade / sell UI ────────────────────────────────────────────
-UPGRADE_PATH_1 = NavCoord("upgrade_path_1", 558, 676)
-UPGRADE_PATH_2 = NavCoord("upgrade_path_2", 785, 676)
-SELL_BUTTON = NavCoord("sell", 346, 654)
+UPGRADE_PATH_1 = NavCoord("upgrade_path_1", 558, 706)
+UPGRADE_PATH_2 = NavCoord("upgrade_path_2", 785, 706)
+SELL_BUTTON = NavCoord("sell", 346, 680)
 
 TARGETS = {
     "first":  NavCoord("target_first",  150, 700),
@@ -284,6 +285,7 @@ def validate_placement(
 def _click(page: Page, coord: NavCoord, container_box: dict) -> None:
     abs_x = container_box["x"] + coord.x
     abs_y = container_box["y"] + coord.y
+    page.evaluate(f"window.__BLOONSBENCH__?.showDot({abs_x}, {abs_y})")
     page.mouse.click(abs_x, abs_y)
 
 

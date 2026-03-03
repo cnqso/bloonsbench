@@ -4,18 +4,22 @@ A benchmark for evaluating LLM agents by having them play **Bloons Tower Defense
 
 The agent sees screenshots of the game, reads cash/lives/round via OCR, and uses tools to place towers, upgrade them, and start rounds. Better models are expected to survive more rounds than worse models.
 
-Everything runs locally — [Ruffle](https://ruffle.rs/) emulates Flash, [Playwright](https://playwright.dev/python/) drives Chromium, and the agent talks to [OpenRouter](https://openrouter.ai/) for LLM inference.
+[Ruffle](https://github.com/ruffle-rs/ruffle) emulates Flash, [Playwright](https://github.com/microsoft/playwright) drives Chromium, [EasyOCR](https://github.com/JaidedAI/EasyOCR) reads the HUD, and the agent talks to [OpenRouter](https://openrouter.ai/) for LLM inference.
 
 <!-- LEADERBOARD:START -->
 ## Leaderboard
 
 | Model | Runs | Best Round | Avg Round | Avg Towers | Avg Tokens |
 |-------|------|-----------|-----------|------------|------------|
+| google/gemini-3-flash-preview | 7 | 65 | 44.0 | 5 | 1.6M |
 | openai/gpt-5-mini | 3 | 65 | 49.3 | 4 | 2.8M |
 | anthropic/claude-sonnet-4.6 | 1 | 59 | 59.0 | 13 | 2.5M |
-| openai/gpt-5-nano | 2 | 40 | 25.5 | 3 | 541K |
+| openai/gpt-5-nano | 3 | 40 | 25.7 | 2 | 683K |
 
 ### Best Runs
+
+**google/gemini-3-flash-preview — Round 65**
+Towers: #1 ninja_monkey (280.0,350.0) [4/2], #2 bomb_tower (250.0,235.0) [4/2], #3 ninja_monkey (200.0,235.0) [4/2], #4 monkey_apprentice (150.0,320.0) [4/2], #5 bomb_tower (280.0,390.0) [2/4], #6 ninja_monkey (715.0,240.0) [4/2], #7 super_monkey (400.0,145.0) [2/2], #8 bomb_tower (675.0,240.0) [2/4]
 
 **openai/gpt-5-mini — Round 65**
 No tower data available.
@@ -37,9 +41,10 @@ Towers: #1 dart_monkey (150.0,320.0) [2/3], #3 dart_monkey (210.0,235.0) [2/3], 
 ## Setup
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+uv venv && source .venv/bin/activate
+uv pip install -r requirements.txt
 python -m playwright install chromium
+ python scripts/run_agent.py --model openai/gpt-5-nano
 ```
 
 Place your BTD5 SWF at `game/btd5.swf` (not distributed, but easily available with a google search).
@@ -55,8 +60,13 @@ OPENROUTER_API_KEY=sk-or-...
 python scripts/run_agent.py --model openai/gpt-5-nano
 
 # Or, inject your own save file
-python scripts/run_agent.py --model openai/gpt-5-nano --saves saves/unlocks_maxed.json
+python scripts/run_agent.py --model openai/gpt-5-nano --saves saves/my-save.json
+
+# Extended thinking (for models that support it, e.g. Gemini)
+python scripts/run_agent.py --model google/gemini-3-flash-preview --reasoning high
 ```
+
+**Reasoning effort:** Models that support extended thinking (e.g. Gemini) can use `--reasoning low|medium|high`. Higher effort produces more verbose thinking traces but costs more tokens. **Leaderboard submissions must use `--reasoning low` (the default)** to ensure fair comparisons.
 
 Saves are base64-encoded SOL files written to `localStorage` before the Flash VM starts (via deferred Ruffle loading).
 
@@ -116,13 +126,5 @@ saves/           Pre-made save files for tower unlocks
 5. Our harness remembers tower positions and gives upgrade path info to the LLM to bypass computer usage limitations and avoid desyncs.
 6. OCR polls for the GO button to detect round completion, and for GAME OVER to detect loss
 7. Context distillation kicks in when the conversation gets long, summarizing history to stay within token limits
-
-## Save injection
-
-BTD5 locks most towers behind progression. To benchmark with all towers available, inject a save file:
-
-```bash
-python scripts/run_agent.py --model openai/gpt-4o --saves saves/unlocks_maxed.json
-```
 
 
