@@ -69,31 +69,16 @@ CYCLE_INTERVAL_S = 60  # one planning cycle every minute
 # ── .env loading ─────────────────────────────────────────────────
 
 def load_dotenv():
-    for env_path in [REPO_ROOT / ".env", Path.home() / ".env"]:
-        if env_path.exists():
-            try:
-                # Explicitly use UTF-8 encoding (important for Windows)
-                content = env_path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                # Fallback for files with different encoding
-                content = env_path.read_text(encoding="utf-8", errors="replace")
+    env_path = REPO_ROOT / ".env"
+    if not env_path.exists():
+        return
 
-            for line in content.splitlines():
-                line = line.strip()
-                # Skip empty lines, comments, and malformed lines
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                # Skip lines with null bytes (Windows encoding issues)
-                if "\x00" in line:
-                    continue
-
-                key, _, val = line.partition("=")
-                key = key.strip()
-                val = val.strip().strip("\"'")
-
-                # Skip if key or value contains null bytes
-                if "\x00" not in key and "\x00" not in val:
-                    os.environ.setdefault(key, val)
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        os.environ.setdefault(key.strip(), val.strip().strip("\"'"))
 
 
 # ── Tool format conversion ───────────────────────────────────────
