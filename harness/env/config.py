@@ -21,7 +21,7 @@ class HarnessConfig:
     # an ephemeral per-run profile.
     persistent_profile_dir: Optional[Path] = None
 
-    startup_wait_s: float = 13.0
+    startup_wait_s: float = 60.0  # Max timeout for main menu detection (actual wait is usually much shorter)
 
     # Fixed port for local HTTP server. Pinning ensures localStorage
     # (origin-scoped to 127.0.0.1:PORT) persists across sessions.

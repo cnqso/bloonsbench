@@ -60,6 +60,66 @@ class BloonsWebEnv:
     _state_reader: Optional[GameStateReader] = None
     _last_game_state: GameState = field(default_factory=GameState)
 
+    def _wait_for_main_menu_ready(self, max_wait_s: float = 60.0, poll_interval_ms: int = 1000) -> bool:
+        """Poll for main menu text (e.g. 'Play As Guest') to appear via OCR.
+
+        Returns True if menu detected, False if timeout.
+        Region: screenshot (438,516)→(633,555), content-relative (369,481,195,39).
+        """
+        import tempfile
+        try:
+            from PIL import Image
+            import numpy as np
+            import easyocr
+        except ImportError:
+            # Fallback to time-based wait if OCR not available
+            self.logger.log("main_menu_wait_fallback", reason="OCR not available")
+            self.page.wait_for_timeout(int(self.cfg.startup_wait_s * 1000))
+            return True
+
+        # Content-relative region for "Play As Guest" button
+        # Screenshot coords (438,516)→(633,555), container offset ~(69,35)
+        # → content-relative (369, 481, 195, 39)
+        region_x, region_y, region_w, region_h = 369, 481, 195, 39
+
+        reader = easyocr.Reader(["en"], gpu=self.cfg.ocr_easyocr_gpu, verbose=False)
+        start_time = time.time()
+
+        while (time.time() - start_time) < max_wait_s:
+            try:
+                # Take screenshot and crop to button region
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    tmp_path = tmp.name
+
+                self._capture_screenshot(tmp_path)
+                box = _get_container_box(self.page)
+
+                img = Image.open(tmp_path)
+                # Crop to content area first, then to button region
+                content_crop = img.crop((box["x"], box["y"], box["x"] + box["width"], box["y"] + box["height"]))
+                button_crop = content_crop.crop((region_x, region_y, region_x + region_w, region_y + region_h))
+
+                # Run OCR on button region
+                arr = np.array(button_crop)
+                results = reader.readtext(arr, detail=1, paragraph=False)
+
+                # Clean up temp file
+                Path(tmp_path).unlink(missing_ok=True)
+
+                # If we detect any text, main menu is ready
+                if results and len(results) > 0:
+                    detected_text = " ".join(str(r[1]) for r in results if len(r) >= 2)
+                    self.logger.log("main_menu_ready", text=detected_text, elapsed_s=round(time.time() - start_time, 2))
+                    return True
+
+            except Exception as e:
+                self.logger.log("main_menu_poll_error", error=str(e))
+
+            self.page.wait_for_timeout(poll_interval_ms)
+
+        self.logger.log("main_menu_timeout", max_wait_s=max_wait_s)
+        return False
+
     def reset(self, out_root: Optional[Path] = None) -> Path:
         """Start a new run. Returns run_dir."""
         self.close()
@@ -137,7 +197,8 @@ class BloonsWebEnv:
             self.page.evaluate("window.__BLOONSBENCH__.loadGame()")
             self.logger.log("deferred_load_triggered")
 
-        self.page.wait_for_timeout(int(self.cfg.startup_wait_s * 1000))
+        # Wait for main menu to appear (OCR-based detection with fallback)
+        self._wait_for_main_menu_ready(max_wait_s=self.cfg.startup_wait_s)
         self.observe(tag="startup")
 
         if self.cfg.auto_navigate_to_round:
