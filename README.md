@@ -15,7 +15,10 @@ The agent sees screenshots of the game, reads cash/lives/round via OCR, and uses
 | google/gemini-3-flash-preview | 7 | 65 | 44.0 | 5 | 1.6M |
 | openai/gpt-5-mini | 3 | 65 | 49.3 | 4 | 2.8M |
 | anthropic/claude-sonnet-4.6 | 1 | 59 | 59.0 | 13 | 2.5M |
+| Qwen3.5 27B | 5 | 43 | 37.8 | 6 | 1.0M |
 | openai/gpt-5-nano | 3 | 40 | 25.7 | 2 | 683K |
+| Qwen3.5 35B A3B | 3 | 37 | 32.0 | 4 | 1.3M |
+| Qwen3.5 9B | 2 | 30 | 30.0 | 6 | 1.2M |
 
 ### Best Runs
 
@@ -28,8 +31,17 @@ No tower data available.
 **anthropic/claude-sonnet-4.6 — Round 59**
 Towers: #1 dart_monkey (420.0,145.0) [2/3], #2 dart_monkey (585.0,145.0) [2/3], #3 dart_monkey (150.0,320.0) [2/3], #4 dart_monkey (715.0,240.0) [2/3], #5 dart_monkey (280.0,350.0) [2/3], #6 bomb_tower (500.0,430.0) [3/2], #7 ninja_monkey (350.0,145.0) [4/2], #8 tack_shooter (260.0,235.0) [4/2], #9 bomb_tower (480.0,235.0) [2/4], #10 sniper_monkey (400.0,350.0) [2/2], #11 ice_tower (470.0,145.0) [2/4], #12 ninja_monkey (530.0,145.0) [4/2], #13 super_monkey (100.0,430.0) [2/2]
 
+**Qwen3.5 27B — Round 43**
+Towers: #1 dart_monkey (280.0,350.0) [2/3], #2 dart_monkey (150.0,320.0) [2/3], #3 glue_gunner (240.0,235.0) [2/1], #4 tack_shooter (260.0,145.0) [3/2], #5 ice_tower (715.0,240.0) [2/2], #6 bomb_tower (400.0,145.0) [2/4], #7 ninja_monkey (500.0,145.0) [2/4], #8 spike_factory (600.0,145.0) [0/0]
+
 **openai/gpt-5-nano — Round 40**
 Towers: #1 dart_monkey (150.0,320.0) [2/3], #3 dart_monkey (210.0,235.0) [2/3], #4 spike_factory (260.0,150.0) [3/2], #5 dart_monkey (280.0,350.0) [3/2], #6 dart_monkey (430.0,260.0) [4/2]
+
+**Qwen3.5 35B A3B — Round 37**
+Towers: #1 dart_monkey (280.0,350.0) [2/3], #2 tack_shooter (150.0,320.0) [3/2], #4 monkey_village (200.0,235.0) [2/1], #5 ninja_monkey (585.0,145.0) [3/2]
+
+**Qwen3.5 9B — Round 30**
+Towers: #1 dart_monkey (280.0,350.0) [2/3], #2 dart_monkey (150.0,320.0) [2/3], #3 dart_monkey (715.0,240.0) [3/2], #4 dart_monkey (350.0,150.0) [3/2], #5 dart_monkey (500.0,400.0) [3/2], #6 dart_monkey (600.0,300.0) [3/0]
 
 ### Submit Your Results
 
