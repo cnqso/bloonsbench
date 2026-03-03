@@ -1322,7 +1322,7 @@ def main():
         default="profiles/persistent/default/chromium-profile",
         help="Persistent Chromium profile dir (relative to repo root)",
     )
-    parser.add_argument("--saves", default=None, help="Optional save JSON to inject before load")
+    parser.add_argument("--saves", default="saves/default.json", help="Save JSON to inject before load (default: saves/default.json)")
     parser.add_argument("--map", default="monkey_lane")
     parser.add_argument("--difficulty", default="easy")
     parser.add_argument(
@@ -1347,7 +1347,7 @@ def main():
         auto_navigate_to_round=True,
         nav_map_name=args.map,
         nav_difficulty=args.difficulty,
-        save_data_path=Path(args.saves) if args.saves else None,
+        save_data_path=REPO_ROOT / args.saves,
         block_network=True,
     )
     env = BloonsWebEnv(

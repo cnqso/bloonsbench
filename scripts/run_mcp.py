@@ -38,7 +38,7 @@ def _launch_game(args: argparse.Namespace) -> BloonsWebEnv:
         auto_navigate_to_round=True,
         nav_map_name=args.map,
         nav_difficulty=args.difficulty,
-        save_data_path=Path(args.saves) if args.saves else None,
+        save_data_path=REPO_ROOT / args.saves,
         block_network=True,
     )
     env = BloonsWebEnv(
@@ -178,7 +178,7 @@ def main() -> None:
         default="profiles/persistent/default/chromium-profile",
         help="Persistent Chromium profile dir (relative to repo root)",
     )
-    parser.add_argument("--saves", default=None, help="Optional save file to inject")
+    parser.add_argument("--saves", default="saves/default.json", help="Save JSON to inject before load (default: saves/default.json)")
     parser.add_argument("--map", default="monkey_lane", help="Map name")
     parser.add_argument("--difficulty", default="easy", help="Difficulty")
     args = parser.parse_args()

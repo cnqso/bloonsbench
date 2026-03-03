@@ -48,8 +48,20 @@ python -m playwright install chromium
 ```
 
 Create a `.env` file with your OpenRouter API key:
+
+**macOS/Linux:**
 ```bash
 echo "OPENROUTER_API_KEY=sk-or-your-key-here" > .env
+```
+
+**Windows (Command Prompt):**
+```cmd
+echo OPENROUTER_API_KEY=sk-or-your-key-here> .env
+```
+
+**Windows (PowerShell):**
+```powershell
+"OPENROUTER_API_KEY=sk-or-your-key-here" | Out-File -Encoding utf8 .env
 ```
 
 Download the game SWF:
