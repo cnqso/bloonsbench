@@ -1,13 +1,11 @@
 # BloonsBench
 
 ![BloonsBench gameplay](image.png)
-*gpt-5-mini playing Monkey Lane*
+*gpt-5-mini playing on Monkey Lane*
 
 A benchmark for evaluating LLM agents by having them play **Bloons Tower Defense 5**.
 
-The agent sees screenshots of the game, reads cash/lives/round via OCR, and uses tools to place towers, upgrade them, and start rounds. Better models are expected to survive more rounds than worse models.
-
-[Ruffle](https://github.com/ruffle-rs/ruffle) emulates Flash, [Playwright](https://github.com/microsoft/playwright) drives Chromium, [EasyOCR](https://github.com/JaidedAI/EasyOCR) reads the HUD, and the agent talks to [OpenRouter](https://openrouter.ai/) for LLM inference.
+The agent sees screenshots of the game, reads cash/lives/round via OCR, and uses tools to place towers, upgrade them, and start rounds.
 
 <!-- LEADERBOARD:START -->
 ## Leaderboard
@@ -81,14 +79,6 @@ Play manually or test the harness:
 python scripts/run_mcp.py --cli
 ```
 
-### MCP server
-
-For external agents that speak [MCP](https://modelcontextprotocol.io/) (JSON-RPC over stdio):
-
-```bash
-python scripts/run_mcp.py
-```
-
 ## Agent tools
 
 | Tool | Description |
@@ -105,22 +95,10 @@ python scripts/run_mcp.py
 | `send_key` | Press a key (e.g. Escape to cancel placement) |
 | `wait` | Wait N milliseconds |
 
-## Architecture
-
-```
-harness/
-  env/         Game environment, config, menu navigation, save injection
-  runtime/     Local HTTP server, Ruffle vendor, wrapper HTML
-  perception/  OCR for reading cash/lives/round from screenshots
-  trace/       JSONL action logging
-scripts/
-  run_agent.py   Autonomous LLM agent (OpenRouter)
-  run_mcp.py     MCP server or interactive CLI
-game/            Place btd5.swf here (not distributed)
-saves/           Pre-made save files for tower unlocks
-```
 
 ## How it works
+
+[Ruffle](https://github.com/ruffle-rs/ruffle) emulates Flash, [Playwright](https://github.com/microsoft/playwright) drives Chromium, [EasyOCR](https://github.com/JaidedAI/EasyOCR) reads the HUD, and the agent talks to [OpenRouter](https://openrouter.ai/) for LLM inference.
 
 1. A local HTTP server (port 8890) serves the Ruffle wrapper + SWF
 2. Playwright launches Chromium, navigates to the game, and auto-clicks through menus to round 1

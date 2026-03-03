@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
-from playwright.sync_api import Page
+from playwright.sync_api import Page  # pyright: ignore[reportMissingImports]
 
 
 @dataclass(frozen=True)
