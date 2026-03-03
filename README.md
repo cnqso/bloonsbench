@@ -1,5 +1,8 @@
 # BloonsBench
 
+![BloonsBench gameplay](image.png)
+*gpt-5-mini playing Monkey Lane*
+
 A benchmark for evaluating LLM agents by having them play **Bloons Tower Defense 5**.
 
 The agent sees screenshots of the game, reads cash/lives/round via OCR, and uses tools to place towers, upgrade them, and start rounds. Better models are expected to survive more rounds than worse models.
