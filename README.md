@@ -45,6 +45,8 @@ Towers: #1 dart_monkey (150.0,320.0) [2/3], #3 dart_monkey (210.0,235.0) [2/3], 
 uv venv && source .venv/bin/activate
 uv pip install -r requirements.txt
 python -m playwright install chromium
+echo OPENROUTER_API_KEY={your api key} >> .env
+curl -L -o ./game/btd5.swf "https://github.com/SJRNoodles/Flash-Game-Archive/raw/master/bloons-tower-defense-5.swf"
 python scripts/run_agent.py --model openai/gpt-5-nano
 ```
 
